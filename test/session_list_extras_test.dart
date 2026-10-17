@@ -35,6 +35,7 @@ Map<String, dynamic> _row(
   String? cwd,
   String? gitRepoRoot,
   String? profile,
+  String source = 'mobile',
   int tokens = 0,
   double? cost,
 }) {
@@ -49,7 +50,7 @@ Map<String, dynamic> _row(
     'title': title,
     'preview': '',
     'model': 'model-a',
-    'source': 'mobile',
+    'source': source,
     'message_count': 2,
     'is_active': false,
     'started_at': start,
@@ -767,6 +768,44 @@ void main() {
       await tester.tap(find.byType(HermesMenuButton<String>));
       await tester.pumpAndSettle();
       expect(gateway.treeCalls, 0);
+    });
+  });
+
+  group('category filter', () {
+    List<Map<String, dynamic>> mixed() => [
+      _row('chat-1', title: 'Plan de viaje', active: fixedNow),
+      _row(
+        'cron-1',
+        title: 'Cron de la noche',
+        active: fixedNow.subtract(const Duration(hours: 1)),
+        source: 'cron',
+      ),
+    ];
+
+    testWidgets('the filter survives leaving the list and coming back', (
+      tester,
+    ) async {
+      await pump(tester, mixed());
+      await _pumpUntil(tester, find.text('Plan de viaje'));
+      // Por defecto la lista es de conversaciones: la automatización no está.
+      expect(find.text('Cron de la noche'), findsNothing);
+
+      await tester.tap(find.byKey(const ValueKey('session-filter-automation')));
+      await _pumpUntil(tester, find.text('Cron de la noche'));
+      expect(find.text('Plan de viaje'), findsNothing);
+
+      // Volver a abrir la pantalla no devuelve el filtro a su valor inicial:
+      // el alcance elegido se recuerda para esta conexión.
+      await tester.pumpWidget(const SizedBox());
+      await pump(tester, mixed());
+      await _pumpUntil(tester, find.text('Cron de la noche'));
+      expect(find.text('Plan de viaje'), findsNothing);
+
+      // Y el filtro sigue siendo el mismo control, no un estado pegado: al
+      // volver a "todas" la lista trae las dos.
+      await tester.tap(find.byKey(const ValueKey('session-filter-everything')));
+      await _pumpUntil(tester, find.text('Plan de viaje'));
+      expect(find.text('Cron de la noche'), findsOneWidget);
     });
   });
 

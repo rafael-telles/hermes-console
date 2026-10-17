@@ -332,6 +332,9 @@ class _SessionListScreenState extends State<SessionListScreen>
   int _listRevision = 0;
   Object? _filteredKey;
   List<Session> _filteredCache = const [];
+
+  /// Filtro de categoría (chats / automation / all) de esta conexión. Como el
+  /// orden de la lista, se recuerda entre aperturas de la pantalla.
   SessionCategory _activeCategory = SessionCategory.chats;
   bool _showArchived = false;
 
@@ -356,6 +359,11 @@ class _SessionListScreenState extends State<SessionListScreen>
   static final Set<String> _moveUnsupported = {};
 
   String get _sortPrefKey => 'session_list_sort:${widget.connection.id}';
+
+  /// El filtro de categoría de esta conexión. Igual que el orden, es una
+  /// preferencia de vista de este dispositivo, nunca del servidor.
+  String get _categoryPrefKey =>
+      'session_list_category:${widget.connection.id}';
   DateTime _now() => (widget.clockOverride ?? DateTime.now)();
 
   SessionArchive? _archive;
@@ -522,6 +530,10 @@ class _SessionListScreenState extends State<SessionListScreen>
     final archive = await SessionArchive.load(prefs, widget.connection.id);
     if (!mounted) return;
     final storedSort = SessionListSort.fromWire(prefs.getString(_sortPrefKey));
+    final storedCategory = SessionCategory.fromWire(
+      prefs.getString(_categoryPrefKey),
+    );
+    final shownCategory = _activeCategory;
     final repository = _repository;
     final pinSync = SessionPinSync(
       archive,
@@ -545,8 +557,13 @@ class _SessionListScreenState extends State<SessionListScreen>
       archive.addListener(_onArchiveChanged);
       _pinSync = pinSync;
       _sort = storedSort;
+      _activeCategory = storedCategory;
       _archiveReady = true;
     });
+    // El servidor resuelve la categoría antes de limit/offset: si el filtro
+    // recordado no es el que estaba en pantalla, la lectura que ya salió trae
+    // el alcance equivocado y hay que repetirla con el que se va a mostrar.
+    if (storedCategory != shownCategory) _refreshLibraryScope();
     await _migrateLineagePreferences(_sessions);
     await pinSync.updateSessions(_sessions);
     if (mounted) setState(() {});
@@ -1029,10 +1046,12 @@ class _SessionListScreenState extends State<SessionListScreen>
     );
   }
 
-  void _selectCategory(SessionCategory value) {
+  Future<void> _selectCategory(SessionCategory value) async {
     if (value == _activeCategory) return;
     setState(() => _activeCategory = value);
     _refreshLibraryScope();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(_categoryPrefKey, value.wire);
   }
 
   void _toggleArchived() {

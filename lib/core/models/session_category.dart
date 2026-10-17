@@ -1,5 +1,30 @@
 /// Categorías estables de la biblioteca publicadas por Hermes Desktop 0.20.
-enum SessionCategory { chats, automation, all }
+///
+/// El filtro de la lista es una preferencia de vista de este dispositivo: se
+/// recuerda entre aperturas y nunca viaja al servidor.
+enum SessionCategory {
+  /// Conversaciones: todo lo que no es una automatización.
+  chats('chats'),
+
+  /// Sesiones de cron, kanban, subagente, webhook y one-shot.
+  automation('automation'),
+
+  /// Las dos anteriores.
+  all('all');
+
+  /// Lo que se guarda en las preferencias y lo que entiende el servidor.
+  final String wire;
+  const SessionCategory(this.wire);
+
+  /// Un valor ausente o desconocido se lee como [chats], el alcance original
+  /// de la lista.
+  static SessionCategory fromWire(Object? value) {
+    for (final category in values) {
+      if (category.wire == value) return category;
+    }
+    return chats;
+  }
+}
 
 /// Fuentes que Hermes Agent 0.20 considera automatización.
 ///
