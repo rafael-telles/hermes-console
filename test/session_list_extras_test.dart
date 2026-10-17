@@ -733,7 +733,8 @@ void main() {
       expect(top(tester, 'Intermedia'), lessThan(top(tester, 'Barata')));
 
       // Pin the cheapest one: it goes above the dearest.
-      await tester.drag(find.text('Barata'), const Offset(400, 0));
+      await openRowMenu(tester, 'Barata');
+      await tester.tap(find.text(strings(tester).slMenuPin));
       await tester.pumpAndSettle();
       expect(top(tester, 'Barata'), lessThan(top(tester, 'Cara')));
     });
