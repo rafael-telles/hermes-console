@@ -37,8 +37,8 @@ import 'support/home_chat_finders.dart';
 /// etiqueta en mayúsculas + cuenta, UNA tarjeta redondeada por sección con las
 /// filas separadas por líneas finas, punto "en vivo" pulsante para la
 /// conversación que está corriendo, punto de atención para la que te necesita,
-/// deslizar para "Fijar arriba" y el borrador como texto descriptivo hilado en
-/// la vista previa (no una píldora de color).
+/// deslizar a la derecha para archivar y el borrador como texto descriptivo
+/// hilado en la vista previa (no una píldora de color).
 const _connectionId = 'conn-redesign';
 
 Map<String, dynamic> _row(
@@ -230,6 +230,14 @@ Future<void> _pumpUntil(
     if (finder.evaluate().isNotEmpty) return;
   }
   expect(finder, findsWidgets);
+}
+
+/// Fixed-frame pump: enough for the row animation, the write and the amber
+/// notice to land, without a settle that could wait on the notice's timer.
+Future<void> _settle(WidgetTester tester) async {
+  for (var i = 0; i < 16; i++) {
+    await tester.pump(const Duration(milliseconds: 50));
+  }
 }
 
 void main() {
@@ -456,8 +464,11 @@ void main() {
     final strings = Strings.of(tester.element(find.byType(SessionListScreen)));
     expect(find.text(strings.sesPinned.toUpperCase()), findsNothing);
 
-    // Deslizar hacia la derecha fija la conversación (acción del mockup).
-    await tester.drag(find.text('Migrar tests de pagos'), const Offset(400, 0));
+    // Fijar vive en el menú de acciones (long-press): el gesto de la fila
+    // quedó para archivar.
+    await tester.longPress(find.text('Migrar tests de pagos'));
+    await tester.pumpAndSettle();
+    await tester.tap(find.text(strings.slMenuPin));
     await tester.pumpAndSettle();
 
     expect(find.text(strings.sesPinned.toUpperCase()), findsOneWidget);
@@ -497,18 +508,16 @@ void main() {
       }
       expect(SessionListScreen.debugFilterPasses, passes);
 
-      await tester.drag(
-        find.text('Migrar tests de pagos'),
-        const Offset(400, 0),
-      );
+      await tester.longPress(find.text('Migrar tests de pagos'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(strings.slMenuPin));
       await tester.pumpAndSettle();
       expect(find.text(strings.sesPinned.toUpperCase()), findsOneWidget);
       expect(SessionListScreen.debugFilterPasses, greaterThan(passes));
 
-      await tester.drag(
-        find.text('Migrar tests de pagos'),
-        const Offset(400, 0),
-      );
+      await tester.longPress(find.text('Migrar tests de pagos'));
+      await tester.pumpAndSettle();
+      await tester.tap(find.text(strings.slMenuUnpin));
       await tester.pumpAndSettle();
       expect(find.text(strings.sesPinned.toUpperCase()), findsNothing);
     },
@@ -616,6 +625,64 @@ void main() {
     expect(find.text(strings.slMenuDelete), findsOneWidget);
     expect(find.text(strings.slMenuArchive), findsOneWidget);
     expect(find.text(strings.slMenuRename), findsOneWidget);
+  });
+
+  testWidgets('deslizar a la derecha archiva la conversación, no la borra', (
+    tester,
+  ) async {
+    tester.view.physicalSize = const Size(1170, 2532);
+    tester.view.devicePixelRatio = 3;
+    addTearDown(tester.view.resetPhysicalSize);
+    addTearDown(tester.view.resetDevicePixelRatio);
+
+    await pump(tester, [
+      _row('chat-1', title: 'Deploy a staging', lastActive: nowSeconds()),
+      _row('chat-2', title: 'Informe de costes', lastActive: nowSeconds() - 60),
+    ]);
+    await _pumpUntil(tester, find.text('Deploy a staging'));
+    final strings = Strings.of(tester.element(find.byType(SessionListScreen)));
+
+    // La fila arrastrada a la derecha ofrece «Archivar», no «Gestionar».
+    // El primer tramo es el slop que el reconocedor consume al aceptar.
+    final gesture = await tester.startGesture(
+      tester.getCenter(find.text('Deploy a staging')),
+    );
+    await gesture.moveBy(const Offset(24, 0));
+    await gesture.moveBy(const Offset(140, 0));
+    await tester.pump();
+    expect(find.text(strings.slMenuArchive), findsWidgets);
+    expect(find.text(strings.slSwipeManage), findsNothing);
+
+    await gesture.moveBy(const Offset(300, 0));
+    await gesture.up();
+    await _settle(tester);
+
+    // Sale de la lista activa y sigue existiendo: archivada, no borrada.
+    expect(find.text('Deploy a staging'), findsNothing);
+    expect(find.text('Informe de costes'), findsOneWidget);
+    final prefs = await SharedPreferences.getInstance();
+    final archive = await SessionArchive.load(prefs, _connectionId);
+    await archive.remoteStateSettled;
+    expect(archive.isArchived('chat-1'), isTrue);
+
+    // Sigue en Archive, y el mismo gesto la devuelve a la lista.
+    await tester.tap(find.byKey(const ValueKey('session-filter-archived')));
+    await _settle(tester);
+    expect(find.text('Deploy a staging'), findsOneWidget);
+
+    final restore = await tester.startGesture(
+      tester.getCenter(find.text('Deploy a staging')),
+    );
+    await restore.moveBy(const Offset(24, 0));
+    await restore.moveBy(const Offset(140, 0));
+    await tester.pump();
+    expect(find.text(strings.slMenuUnarchive), findsWidgets);
+    await restore.moveBy(const Offset(300, 0));
+    await restore.up();
+    await _settle(tester);
+
+    expect(find.text('Deploy a staging'), findsNothing);
+    expect(archive.isArchived('chat-1'), isFalse);
   });
 
   testWidgets('la lista reserva hueco inferior para el dock flotante', (

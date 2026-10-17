@@ -2935,10 +2935,11 @@ class _SessionListScreenState extends State<SessionListScreen>
   /// Fila deslizable de una conversación.
   ///
   /// Dos gestos, ninguno destructivo:
-  ///  - hacia la derecha: "Fijar arriba" / "Desfijar", la acción del mockup.
+  ///  - hacia la derecha: "Archivar" / "Desarchivar", la acción de
+  ///    organización de la fila.
   ///  - hacia la izquierda: "Gestionar", la entrada al menú de acciones que ya
-  ///    existía (y que sigue siendo la única vía a borrar, archivar, renombrar,
-  ///    detalles, ocultar y copiar ID).
+  ///    existía (y que sigue siendo la única vía a borrar, renombrar, fijar,
+  ///    detalles, ocultar y copiar ID). Arrastrar nunca borra.
   /// Long-press se conserva como alternativa accesible para TalkBack y teclado.
   Widget _sessionRow(Session session, Strings s, HermesThemeColors colors) {
     final archived = _isArchived(session);
@@ -2954,8 +2955,8 @@ class _SessionListScreenState extends State<SessionListScreen>
       direction: DismissDirection.horizontal,
       background: _SwipeAffordance(
         alignment: Alignment.centerLeft,
-        icon: pinned ? Icons.push_pin_outlined : Icons.push_pin,
-        label: pinned ? s.slMenuUnpin : s.slMenuPin,
+        icon: archived ? Icons.unarchive_outlined : Icons.archive_outlined,
+        label: archived ? s.slMenuUnarchive : s.slMenuArchive,
       ),
       secondaryBackground: _SwipeAffordance(
         alignment: Alignment.centerRight,
@@ -2964,11 +2965,11 @@ class _SessionListScreenState extends State<SessionListScreen>
       ),
       confirmDismiss: (direction) async {
         if (direction == DismissDirection.startToEnd) {
-          await _togglePin(session);
+          await _toggleArchive(session);
         } else {
           await _showSessionContextMenu(session);
         }
-        // El gesto abre acciones o fija; nunca borra por arrastre.
+        // El gesto archiva o abre acciones; nunca borra por arrastre.
         return false;
       },
       child: _SessionTile(
