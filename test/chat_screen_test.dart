@@ -21970,6 +21970,14 @@ void main() {
     expect(find.text('Agentes y subagentes'), findsNothing);
     // Below the find row, Ir a and Sesión: present, maybe below the fold.
     expect(find.text('Artefactos', skipOffstage: false), findsOneWidget);
+    // La hoja sumó Renombrar/Archivar/Fijar sobre las acciones anteriores, así
+    // que «Archivos y enlaces» se alcanza desplazando la hoja, como en el
+    // teléfono.
+    await tester.drag(
+      find.byKey(const ValueKey('chat-control-sheet')),
+      const Offset(0, -400),
+    );
+    await tester.pumpAndSettle();
     expect(
       find.text('Archivos y enlaces', skipOffstage: false),
       findsOneWidget,
@@ -21994,6 +22002,13 @@ void main() {
     await tester.tap(find.byKey(const ValueKey('chat-notch')));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 240));
+    // La hoja creció arriba (organizar la conversación): Permisos queda más
+    // abajo, como en el teléfono.
+    await tester.drag(
+      find.byKey(const ValueKey('chat-control-sheet')),
+      const Offset(0, -320),
+    );
+    await tester.pumpAndSettle();
     await tester.tap(find.text('Permisos / modo'));
     await tester.pump();
     await tester.pump(const Duration(milliseconds: 240));

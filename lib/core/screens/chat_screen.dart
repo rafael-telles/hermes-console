@@ -129,6 +129,7 @@ import '../services/active_profile_scope.dart';
 import '../services/connection_manager.dart';
 import '../services/dashboard_session_timeline.dart';
 import '../services/session_archive.dart';
+import '../services/session_repository.dart';
 import '../services/session_artifact_download_service.dart';
 import '../services/session_config_reducer.dart';
 import '../services/session_deletion.dart';
@@ -140,6 +141,7 @@ import '../services/subagent_transcript_projection.dart';
 import '../services/tui_gateway_client.dart'
     show TuiGatewayClient, TuiGatewayRpcError;
 import '../widgets/chat_connection_recovery_row.dart';
+import '../widgets/session_title_editor_route.dart';
 import '../widgets/hermes_notice.dart';
 import '../widgets/inline_message_editor.dart';
 import '../widgets/island.dart';
@@ -1169,6 +1171,9 @@ enum _ChatControlAction {
   content,
   branch,
   artifacts,
+  rename,
+  archive,
+  pin,
   details,
   cron,
   recovery,
@@ -4303,11 +4308,59 @@ class _ChatScreenState extends State<ChatScreen>
   /// a confirmed delete can be recorded without an await.
   SessionArchive? _sharedArchive;
 
+  /// Fenced session-state writer of this connection. Rename, archive and pin
+  /// travel through it, the same route the Conversations list uses, so a write
+  /// made from inside the chat commits on the Dashboard.
+  SessionRepository? _stateRepository;
+
+  /// Archive/pin of the open conversation as last confirmed here. The widget's
+  /// copy of the session does not refresh while the chat stays open, so the
+  /// composer sheet would otherwise keep offering the action that was just
+  /// applied.
+  bool? _archivedOverride;
+  bool? _pinnedOverride;
+
+  bool get _openSessionArchived =>
+      _archivedOverride ??
+      _sharedArchive?.isSessionArchived(widget.session) ??
+      widget.session.archived;
+
+  bool get _openSessionPinned =>
+      _pinnedOverride ??
+      _sharedArchive?.isSessionPinned(widget.session) ??
+      false;
+
+  /// Title as every other surface shows it: the shared archive (renames made
+  /// here or in Conversaciones) wins over the widget's stale copy.
+  String _openSessionTitle(Strings s) =>
+      _sharedArchive?.titleForSession(widget.session, strings: s) ??
+      localizedSessionTitle(s, widget.session);
+
   Future<void> _loadSharedArchive() async {
     final prefs = await SharedPreferences.getInstance();
     final archive = await SessionArchive.load(prefs, widget.connection.id);
+    // The chat is also a place to organise the conversation, so it attaches the
+    // same fenced writer the list does: without it a rename would only be a
+    // local preference and the server would keep the old title.
+    final repository = widget.connection.readOnly
+        ? null
+        : SessionRepository.forConnection(
+            widget.connection,
+            gateway: ApiClient(
+              baseUrl: widget.connection.baseUrl,
+              apiKey: widget.connection.apiKey,
+              connectionId: widget.connection.id,
+            ),
+          );
+    if (repository != null) {
+      archive.attachRemoteState(
+        repository.patchSessionState,
+        httpStatusOf: dashboardHttpStatusOf,
+      );
+    }
     if (!mounted) return;
     _sharedArchive = archive;
+    _stateRepository = repository;
     // Opening a session marks it read on the server, from whichever surface
     // opened it (Desktop `clearUnreadOnOpen`: every open, only when unread).
     unawaited(archive.markSessionReadOnOpen(widget.session));
@@ -13356,6 +13409,11 @@ class _ChatScreenState extends State<ChatScreen>
             model: strings.chaModelSheetTitle,
             previousChat: strings.chatNotchPreviousChat,
             nextChat: strings.chatNotchNextChat,
+            rename: strings.slMenuRename,
+            archive: _openSessionArchived
+                ? strings.slMenuUnarchive
+                : strings.slMenuArchive,
+            pin: _openSessionPinned ? strings.slMenuUnpin : strings.slMenuPin,
             searchChats: strings.chatNotchSearchChats,
             goTo: strings.chatNotchGoTo,
             chats: strings.chatNotchChats,
@@ -13363,7 +13421,7 @@ class _ChatScreenState extends State<ChatScreen>
             projects: strings.drawerProjects,
             settings: strings.drawerSettings,
           ),
-          conversationTitle: localizedSessionTitle(strings, widget.session),
+          conversationTitle: _openSessionTitle(strings),
           initialGoTo: goTo,
           readOnly: sessionReadOnly,
           showDetails: _devDiagnostics,
@@ -13371,6 +13429,17 @@ class _ChatScreenState extends State<ChatScreen>
           onPermissions: () => select(_ChatControlAction.permissions),
           onRefresh: () => select(_ChatControlAction.refresh),
           onArtifacts: () => select(_ChatControlAction.artifacts),
+          // Organising the open conversation, without leaving it. Hidden until
+          // the shared archive is loaded: that is what the writes go through.
+          onRename: _sharedArchive == null
+              ? null
+              : () => select(_ChatControlAction.rename),
+          onToggleArchive: _sharedArchive == null
+              ? null
+              : () => select(_ChatControlAction.archive),
+          onTogglePin: _sharedArchive == null
+              ? null
+              : () => select(_ChatControlAction.pin),
           onContent: () => select(_ChatControlAction.content),
           onPrompts: () => select(_ChatControlAction.prompts),
           onShowPinnedPrompt:
@@ -13446,6 +13515,12 @@ class _ChatScreenState extends State<ChatScreen>
         unawaited(_branchChat());
       case _ChatControlAction.artifacts:
         unawaited(_showSessionArtifacts());
+      case _ChatControlAction.rename:
+        unawaited(_renameOpenSession());
+      case _ChatControlAction.archive:
+        unawaited(_toggleOpenSessionArchive());
+      case _ChatControlAction.pin:
+        unawaited(_toggleOpenSessionPin());
       case _ChatControlAction.details:
         _showSessionDetails();
       case _ChatControlAction.cron:
@@ -13461,6 +13536,136 @@ class _ChatScreenState extends State<ChatScreen>
       case _ChatControlAction.delete:
         unawaited(_deleteCurrentChat());
     }
+  }
+
+  // ── La conversación abierta, desde la hoja del compositor ────────────────
+  //
+  // Renombrar, archivar y fijar van por los mismos almacenes que
+  // Conversaciones: el SessionArchive compartido (todas las pantallas lo
+  // escuchan y repintan) y el escritor con fence del Dashboard, así que la
+  // escritura llega al servidor igual que desde la fila de la lista.
+
+  Future<void> _renameOpenSession() async {
+    final archive = _sharedArchive;
+    if (archive == null) return;
+    final strings = Strings.of(context);
+    final newTitle = await showSessionTitleEditorRoute(
+      context,
+      initialTitle: _openSessionTitle(strings),
+    );
+    final trimmed = newTitle?.trim();
+    if (trimmed == null || trimmed.isEmpty) return;
+    try {
+      await archive.renameSession(widget.session, trimmed);
+    } catch (_) {
+      if (!mounted) return;
+      HermesNotice.of(
+        context,
+      ).show(message: strings.slRenameFailed, kind: HermesNoticeKind.error);
+      return;
+    }
+    if (!mounted) return;
+    setState(() {});
+    HermesNotice.of(
+      context,
+    ).show(message: strings.slRenamed, kind: HermesNoticeKind.success);
+  }
+
+  Future<void> _toggleOpenSessionArchive() async {
+    final archive = _sharedArchive;
+    if (archive == null) return;
+    final strings = Strings.of(context);
+    final wasArchived = _openSessionArchived;
+    final archived = !wasArchived;
+    setState(() => _archivedOverride = archived);
+    // Capturado antes de cualquier await.
+    final profile = context
+        .findAncestorStateOfType<HermesAppState>()
+        ?.connManager
+        .activeProfileFor(widget.connection.id);
+
+    // Servidor legacy (o biblioteca que tuvo que caer al Gateway): archivar
+    // sigue siendo una preferencia local explícita, como en la lista.
+    Future<void> settleLocal() async {
+      if (archived) {
+        await archive.archiveSession(widget.session);
+      } else {
+        await archive.unarchiveSession(widget.session);
+      }
+      if (!mounted) return;
+      _notifyOpenSessionArchive(strings, archived, localOnly: true);
+    }
+
+    final repository = _stateRepository;
+    if (repository == null) {
+      await settleLocal();
+      return;
+    }
+    try {
+      await repository.setArchived(widget.session, archived, profile: profile);
+      // El servidor pasa a ser autoritativo: se retira la bandera local vieja
+      // (un desarchivo remoto no debe quedar tapado por ella) y archivar
+      // desfija, como en la lista.
+      await archive.unarchiveSession(widget.session);
+      if (archived) await archive.unpinSession(widget.session);
+      if (!mounted) return;
+      setState(() {});
+      _notifyOpenSessionArchive(strings, archived, localOnly: false);
+    } on DashboardHttpException catch (error) {
+      if (error.statusCode == 404 || error.statusCode == 405) {
+        await settleLocal();
+        return;
+      }
+      if (!mounted) return;
+      setState(() => _archivedOverride = wasArchived);
+      HermesNotice.of(context).show(
+        message: strings.slArchiveSyncFailed,
+        kind: HermesNoticeKind.error,
+      );
+    } catch (_) {
+      // Un timeout es ambiguo: quitamos la afirmación y avisamos.
+      if (!mounted) return;
+      setState(() => _archivedOverride = wasArchived);
+      HermesNotice.of(context).show(
+        message: strings.slArchiveSyncFailed,
+        kind: HermesNoticeKind.error,
+      );
+    }
+  }
+
+  void _notifyOpenSessionArchive(
+    Strings strings,
+    bool archived, {
+    required bool localOnly,
+  }) {
+    final text = localOnly
+        ? (archived ? strings.slArchivedLocalOnly : strings.slRestoredLocalOnly)
+        : (archived ? strings.slArchived : strings.slRestored);
+    HermesNotice.of(context).show(
+      message: text,
+      kind: localOnly ? HermesNoticeKind.warning : HermesNoticeKind.success,
+    );
+  }
+
+  Future<void> _toggleOpenSessionPin() async {
+    final archive = _sharedArchive;
+    if (archive == null) return;
+    final pinned = !_openSessionPinned;
+    setState(() => _pinnedOverride = pinned);
+    // El mismo sincronizador que usa la lista: escribe la fijación en el
+    // servidor y reconcilia; sin la ruta (404/405) el pin queda en este
+    // dispositivo, que es el respaldo que ya existe.
+    final sync = SessionPinSync(
+      archive,
+      writeRemote: _stateRepository == null
+          ? null
+          : (id, pinned, profile) =>
+                _stateRepository!.setPinned(id, pinned, profile: profile),
+      isUnsupported: (error) =>
+          error is DashboardHttpException &&
+          (error.statusCode == 404 || error.statusCode == 405),
+    );
+    await sync.setLocalPinned(widget.session, pinned);
   }
 
   /// Same hub `/skills` opens: Skills had lost its button in the chat.

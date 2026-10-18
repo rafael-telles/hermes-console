@@ -43,6 +43,14 @@ class ChatControlLabels {
   final String? previousChat;
   final String? nextChat;
 
+  /// Renombrar, archivar/desarchivar y fijar/desfijar la conversación abierta:
+  /// las mismas acciones que el menú de la fila en Conversaciones. El llamador
+  /// ya resuelve el rótulo del estado (Archivar vs Desarchivar, Fijar vs
+  /// Desfijar); la hoja no las decide.
+  final String? rename;
+  final String? archive;
+  final String? pin;
+
   const ChatControlLabels({
     required this.title,
     required this.scope,
@@ -74,6 +82,9 @@ class ChatControlLabels {
     this.model,
     this.previousChat,
     this.nextChat,
+    this.rename,
+    this.archive,
+    this.pin,
   });
 
   String? destination(ChatNotchDestination destination) =>
@@ -108,6 +119,13 @@ class ChatControlSheet extends StatelessWidget {
   final VoidCallback onPermissions;
   final VoidCallback onRefresh;
   final VoidCallback onArtifacts;
+
+  /// Rename, archive/unarchive and pin/unpin the open conversation from this
+  /// sheet: the row menu of Conversaciones, reachable without leaving the chat.
+  /// Null hides the row (no store loaded yet); [readOnly] disables it.
+  final VoidCallback? onRename;
+  final VoidCallback? onToggleArchive;
+  final VoidCallback? onTogglePin;
   final VoidCallback? onContent;
   final VoidCallback? onPrompts;
 
@@ -128,6 +146,9 @@ class ChatControlSheet extends StatelessWidget {
     required this.onPermissions,
     required this.onRefresh,
     required this.onArtifacts,
+    this.onRename,
+    this.onToggleArchive,
+    this.onTogglePin,
     this.onNavigate,
     this.onFindInChat,
     this.onModel,
@@ -257,6 +278,35 @@ class ChatControlSheet extends StatelessWidget {
           HermesGroup(
             key: const ValueKey('chat-control-group-session'),
             children: [
+              if (labels.rename != null && onRename != null)
+                _ActionRow(
+                  key: const ValueKey('chat-control-rename'),
+                  icon: Icons.edit_outlined,
+                  title: labels.rename!,
+                  onTap: readOnly ? null : onRename,
+                ),
+              if (labels.archive != null && onToggleArchive != null)
+                _ActionRow(
+                  key: const ValueKey('chat-control-archive'),
+                  icon: Icons.archive_outlined,
+                  title: labels.archive!,
+                  onTap: readOnly ? null : onToggleArchive,
+                ),
+              if (labels.pin != null && onTogglePin != null)
+                _ActionRow(
+                  key: const ValueKey('chat-control-pin'),
+                  icon: Icons.push_pin_outlined,
+                  title: labels.pin!,
+                  onTap: readOnly ? null : onTogglePin,
+                ),
+              // Artefactos subió aquí desde Herramientas: en el móvil quedaba
+              // bajo el pliegue y es lo que se busca al abrir la hoja.
+              _ActionRow(
+                key: const ValueKey('chat-control-artifacts'),
+                icon: Icons.inventory_2_outlined,
+                title: labels.artifacts,
+                onTap: onArtifacts,
+              ),
               if (labels.model != null && onModel != null)
                 _ActionRow(
                   key: const ValueKey('chat-control-model'),
@@ -327,12 +377,6 @@ class ChatControlSheet extends StatelessWidget {
           HermesGroup(
             key: const ValueKey('chat-control-group-tools'),
             children: [
-              _ActionRow(
-                key: const ValueKey('chat-control-artifacts'),
-                icon: Icons.inventory_2_outlined,
-                title: labels.artifacts,
-                onTap: onArtifacts,
-              ),
               if (labels.content != null && onContent != null)
                 _ActionRow(
                   key: const ValueKey('chat-control-content'),
