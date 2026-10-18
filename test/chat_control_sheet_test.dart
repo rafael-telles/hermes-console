@@ -20,35 +20,53 @@ const _labels = ChatControlLabels(
   readOnly: 'Read only',
 );
 
+/// The base labels plus the ones this test wants to add: the const [_labels]
+/// is kept when nothing extra is needed, so the sheet paints as before.
+ChatControlLabels _labelsWith({String? prompts, bool sessionActions = false}) {
+  if (prompts == null && !sessionActions) return _labels;
+  return ChatControlLabels(
+    title: _labels.title,
+    scope: _labels.scope,
+    sessionSection: _labels.sessionSection,
+    toolsSection: _labels.toolsSection,
+    dangerSection: _labels.dangerSection,
+    permissions: _labels.permissions,
+    refresh: _labels.refresh,
+    artifacts: _labels.artifacts,
+    details: _labels.details,
+    cron: _labels.cron,
+    delete: _labels.delete,
+    readOnly: _labels.readOnly,
+    prompts: prompts,
+    rename: sessionActions ? 'Change title' : null,
+    archive: sessionActions ? 'Archive' : null,
+    pin: sessionActions ? 'Pin to top' : null,
+  );
+}
+
 Widget _app({
   bool readOnly = false,
   bool showDelete = true,
+  bool sessionActions = false,
   VoidCallback? onDelete,
   VoidCallback? onArtifacts,
   VoidCallback? onPrompts,
+  VoidCallback? onRename,
+  VoidCallback? onToggleArchive,
+  VoidCallback? onTogglePin,
   String? promptsLabel,
 }) => MaterialApp(
   theme: AppTheme.hermesRedDark,
   home: Scaffold(
     body: ChatControlSheet(
-      labels: promptsLabel == null
-          ? _labels
-          : ChatControlLabels(
-              title: _labels.title,
-              scope: _labels.scope,
-              sessionSection: _labels.sessionSection,
-              toolsSection: _labels.toolsSection,
-              dangerSection: _labels.dangerSection,
-              permissions: _labels.permissions,
-              refresh: _labels.refresh,
-              artifacts: _labels.artifacts,
-              details: _labels.details,
-              cron: _labels.cron,
-              delete: _labels.delete,
-              readOnly: _labels.readOnly,
-              prompts: promptsLabel,
-            ),
+      labels: _labelsWith(
+        prompts: promptsLabel,
+        sessionActions: sessionActions,
+      ),
       onPrompts: onPrompts,
+      onRename: onRename,
+      onToggleArchive: onToggleArchive,
+      onTogglePin: onTogglePin,
       conversationTitle: 'Synthetic conversation',
       readOnly: readOnly,
       showDetails: true,
@@ -103,6 +121,76 @@ void main() {
     await tester.tap(find.text('Artifacts'));
     await tester.pump();
     expect(artifactsOpened, isTrue);
+  });
+
+  testWidgets('organising the conversation comes before the rest', (
+    tester,
+  ) async {
+    final tapped = <String>[];
+    await tester.pumpWidget(
+      _app(
+        sessionActions: true,
+        onRename: () => tapped.add('rename'),
+        onToggleArchive: () => tapped.add('archive'),
+        onTogglePin: () => tapped.add('pin'),
+      ),
+    );
+
+    for (final entry in const {
+      'chat-control-rename': 'rename',
+      'chat-control-archive': 'archive',
+      'chat-control-pin': 'pin',
+    }.entries) {
+      final row = find.byKey(ValueKey(entry.key));
+      expect(row, findsOneWidget, reason: entry.key);
+      await tester.ensureVisible(row);
+      await tester.tap(row);
+      await tester.pump();
+      expect(tapped, contains(entry.value));
+    }
+
+    // Artefactos subió con ellas: entra en la misma franja, sin desplazar la
+    // hoja hasta el fondo para encontrarlo.
+    final rename = find.byKey(const ValueKey('chat-control-rename'));
+    final artifacts = find.byKey(const ValueKey('chat-control-artifacts'));
+    expect(
+      tester.getRect(artifacts).top,
+      greaterThan(tester.getRect(rename).top),
+    );
+    expect(
+      tester.getRect(artifacts).top - tester.getRect(rename).top,
+      lessThan(240),
+      reason: 'artifacts sits with the conversation actions',
+    );
+  });
+
+  testWidgets('read-only disables renaming, archiving and pinning', (
+    tester,
+  ) async {
+    final tapped = <String>[];
+    await tester.pumpWidget(
+      _app(
+        readOnly: true,
+        sessionActions: true,
+        onRename: () => tapped.add('rename'),
+        onToggleArchive: () => tapped.add('archive'),
+        onTogglePin: () => tapped.add('pin'),
+      ),
+    );
+
+    for (final key in const [
+      'chat-control-rename',
+      'chat-control-archive',
+      'chat-control-pin',
+    ]) {
+      final row = find.byKey(ValueKey(key));
+      expect(row, findsOneWidget, reason: key);
+      await tester.ensureVisible(row);
+      await tester.tap(row);
+      await tester.pump();
+    }
+
+    expect(tapped, isEmpty);
   });
 
   testWidgets('read-only disables the destructive target', (tester) async {
@@ -249,6 +337,9 @@ void main() {
       model: 'Model',
       previousChat: 'Previous chat',
       nextChat: 'Next chat',
+      rename: 'Change title',
+      archive: 'Archive',
+      pin: 'Pin to top',
     );
 
     Widget sheet({
@@ -281,6 +372,9 @@ void main() {
             onPermissions: hit('permissions'),
             onRefresh: hit('refresh'),
             onArtifacts: hit('artifacts'),
+            onRename: hit('rename'),
+            onToggleArchive: hit('archive'),
+            onTogglePin: hit('pin'),
             onContent: hit('content'),
             onPrompts: hit('prompts'),
             onShowPinnedPrompt: hit('show-pinned-prompt'),
@@ -303,6 +397,10 @@ void main() {
     const groups = <String, List<String>>{
       'find': ['find'],
       'session': [
+        'rename',
+        'archive',
+        'pin',
+        'artifacts',
         'model',
         'previous-chat',
         'next-chat',
@@ -314,7 +412,6 @@ void main() {
         'branch',
       ],
       'tools': [
-        'artifacts',
         'content',
         'cron',
         'extensions',
