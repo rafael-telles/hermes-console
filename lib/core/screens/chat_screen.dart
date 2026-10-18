@@ -206,6 +206,7 @@ import 'chat_render_projection.dart';
 import '../widgets/action_approval.dart';
 import '../widgets/agent_task_widgets.dart';
 import '../widgets/attachment_card.dart';
+import '../widgets/chat/embeds/embed_card.dart';
 import '../widgets/chat_turn_activity.dart';
 import '../widgets/attachment_history_preview.dart';
 import '../widgets/artifact_viewer/artifact_viewer_screen.dart';
@@ -5888,16 +5889,24 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  /// Server-reported `(size, mtime)` for a path a user attachment opened.
+  Future<ManagedFileStat?> _statServerManagedFile(String path) =>
+      _statManagedFile(widget.connection, _effectiveSessionProfile, path);
+
   /// Server-reported `(size, mtime)` of a managed path, read from the directory
   /// listing the host already serves — one metadata request with no body.
   /// Fails soft (null) so a host that cannot answer leaves the cached copy in
   /// place instead of breaking an open that works today.
-  Future<ManagedFileStat?> _statServerManagedFile(String path) async {
-    final client = DashboardClient.lazy(widget.connection);
+  static Future<ManagedFileStat?> _statManagedFile(
+    SavedConnection connection,
+    String profile,
+    String path,
+  ) async {
+    final client = DashboardClient.lazy(connection);
     try {
       return await ManagedFileStatService.resolve(
         apiGet: (endpoint) => client.apiGet(
-          '$endpoint&profile=${Uri.encodeQueryComponent(_effectiveSessionProfile)}',
+          '$endpoint&profile=${Uri.encodeQueryComponent(profile)}',
         ),
         path: path,
       );
@@ -5968,6 +5977,12 @@ class _ChatScreenState extends State<ChatScreen>
     return GeneratedMediaService.ensureDownloaded(
       cacheScope,
       reference,
+      // A directive carries no size/mtime, so hand the service the host's
+      // current identity: without it the cache key is the bare path and a file
+      // rewritten in place keeps opening as the revision first seen.
+      statServerPath: testFetcher != null
+          ? null
+          : (path) => _statManagedFile(connection, profile, path),
       fetchServerPathToFileWithProgress:
           (path, destination, reportProgress, downloadCancelled) async {
             if (testFetcher != null) return testFetcher(path, destination);
@@ -24345,35 +24360,70 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
       ),
       errorLabelBuilder: _downloadErrorLabel,
       onOpen: _open,
-      readyBuilder:
-          (context, file, sizeBytes, onOpenExternal, onShare, onSave) {
-            if (widget.reference.mimeType == 'application/pdf' ||
-                widget.reference.displayName.toLowerCase().endsWith('.pdf')) {
-              return GeneratedPdfPreviewCard(
-                file: file,
-                name: widget.reference.displayName,
-                sizeBytes: sizeBytes,
-                onOpen: () => _open(
-                  context,
-                  file,
-                  sizeBytes,
-                  onOpenExternal,
-                  onShare,
-                  onSave,
-                ),
-                onShare: onShare,
-                onSave: onSave,
-              );
-            }
-            return switch (widget.reference.kind) {
-              GeneratedMediaKind.image => GeneratedImageCard(
-                status: GeneratedImageStatus.ready,
-                file: file,
+      readyBuilder: (context, file, sizeBytes, onOpenExternal, onShare, onSave) {
+        if (widget.reference.htmlPreview) {
+          // Desktop renders `::preview{file="….html"}` inline; here the same
+          // page gets the locked WebView the viewer uses, with the host
+          // theme vars injected so a page written for Desktop still looks
+          // right. Bytes are already local: the card above downloaded them.
+          return EmbedCard(
+            htmlSource: () => file.readAsString(),
+            htmlTitle: widget.reference.displayName,
+            fallback: GeneratedFileCard(
+              name: widget.reference.displayName,
+              mimeType: widget.reference.mimeType,
+              status: GeneratedFileStatus.ready,
+              receivedBytes: sizeBytes,
+              htmlPreview: true,
+              onDownload: () => _open(
+                context,
+                file,
+                sizeBytes,
+                onOpenExternal,
+                onShare,
+                onSave,
               ),
-              GeneratedMediaKind.video => GeneratedVideoCard(file: file),
-              GeneratedMediaKind.audio || GeneratedMediaKind.file => null,
-            };
-          },
+              onCancel: () {},
+              onOpen: () => _open(
+                context,
+                file,
+                sizeBytes,
+                onOpenExternal,
+                onShare,
+                onSave,
+              ),
+              onShare: onShare,
+              onSave: onSave,
+            ),
+          );
+        }
+        if (widget.reference.mimeType == 'application/pdf' ||
+            widget.reference.displayName.toLowerCase().endsWith('.pdf')) {
+          return GeneratedPdfPreviewCard(
+            file: file,
+            name: widget.reference.displayName,
+            sizeBytes: sizeBytes,
+            onOpen: () => _open(
+              context,
+              file,
+              sizeBytes,
+              onOpenExternal,
+              onShare,
+              onSave,
+            ),
+            onShare: onShare,
+            onSave: onSave,
+          );
+        }
+        return switch (widget.reference.kind) {
+          GeneratedMediaKind.image => GeneratedImageCard(
+            status: GeneratedImageStatus.ready,
+            file: file,
+          ),
+          GeneratedMediaKind.video => GeneratedVideoCard(file: file),
+          GeneratedMediaKind.audio || GeneratedMediaKind.file => null,
+        };
+      },
     );
   }
 }

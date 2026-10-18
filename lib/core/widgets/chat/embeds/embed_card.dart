@@ -7,6 +7,7 @@ import '../../../../l10n/app_localizations.dart';
 import '../../../theme/app_theme.dart';
 import '../../hermes_premium_ui.dart' show showHermesFloatingSurface;
 import '../../artifact_viewer/artifact_html_policy.dart';
+import '../../artifact_viewer/artifact_theme_css.dart';
 import 'embed_consent_store.dart';
 import 'embed_detector.dart';
 import 'svg_sanitizer.dart';
@@ -41,11 +42,22 @@ final class EmbedLiveRegistry {
 /// showed before embeds existed (the link or the code block); it is shown
 /// whenever the embed cannot be created.
 class EmbedCard extends StatefulWidget {
-  /// Link embed, or null for an SVG fence.
+  /// Link embed, or null for an SVG fence or an inline artifact preview.
   final EmbedDescriptor? descriptor;
 
-  /// Source of an ```svg fence when [descriptor] is null.
+  /// Source of an ```svg fence when this is not a link embed.
   final String? svgSource;
+
+  /// Inline preview of a generated HTML artifact: reads the page's markup —
+  /// the file card already downloaded it — and renders it in the same locked
+  /// WebView the artifact viewer uses.
+  ///
+  /// Not consent-gated: nothing is fetched from a third party here, and the
+  /// download that produced the markup was the user's own action.
+  final Future<String> Function()? htmlSource;
+
+  /// Header label of an [htmlSource] preview, i.e. the artifact's file name.
+  final String? htmlTitle;
 
   final Widget fallback;
   final EmbedConsentStore? consent;
@@ -60,11 +72,19 @@ class EmbedCard extends StatefulWidget {
     required this.fallback,
     this.descriptor,
     this.svgSource,
+    this.htmlSource,
+    this.htmlTitle,
     this.consent,
     this.launchExternal,
     this.settingsFor = defaultArtifactWebViewSettings,
     super.key,
-  }) : assert((descriptor == null) != (svgSource == null));
+  }) : assert(
+         (descriptor != null ? 1 : 0) +
+                 (svgSource != null ? 1 : 0) +
+                 (htmlSource != null ? 1 : 0) ==
+             1,
+         'Exactly one embed source is required',
+       );
 
   @override
   State<EmbedCard> createState() => _EmbedCardState();
@@ -90,6 +110,13 @@ class _EmbedCardState extends State<EmbedCard> {
 
   String get _label => widget.descriptor?.label ?? EmbedType.svg.label;
 
+  /// An artifact preview is not consent-gated: its bytes came from the user's
+  /// own host through the file card they already tapped.
+  bool get _previewsArtifact => widget.htmlSource != null;
+
+  bool get _allowed =>
+      _previewsArtifact || _consent.modeFor(_type) != EmbedMode.off;
+
   @override
   void initState() {
     super.initState();
@@ -97,7 +124,8 @@ class _EmbedCardState extends State<EmbedCard> {
     if (svg != null) {
       _sanitizedSvg = sanitizeSvgForEmbed(svg);
       _failed = _sanitizedSvg == null;
-    } else if (!isAllowedEmbedFrameUrl(widget.descriptor!.embedUrl)) {
+    } else if (!_previewsArtifact &&
+        !isAllowedEmbedFrameUrl(widget.descriptor!.embedUrl)) {
       _failed = true;
     }
     _consent.addListener(_onConsentChanged);
@@ -130,19 +158,23 @@ class _EmbedCardState extends State<EmbedCard> {
 
   void _onConsentChanged() {
     if (!mounted) return;
-    if (_consent.modeFor(_type) == EmbedMode.off) _release();
+    if (!_allowed) _release();
     setState(() {});
     _maybeAutoLoad();
   }
 
   void _maybeAutoLoad() {
     if (_live || _failed || _covered || !_visible) return;
-    if (_consent.modeFor(_type) != EmbedMode.always) return;
+    if (!_previewsArtifact && _consent.modeFor(_type) != EmbedMode.always) {
+      return;
+    }
     if (EmbedLiveRegistry.instance.owner != null) return;
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (mounted && !_live && _consent.modeFor(_type) == EmbedMode.always) {
-        _load();
+      if (!mounted || _live || _covered || !_visible) return;
+      if (!_previewsArtifact && _consent.modeFor(_type) != EmbedMode.always) {
+        return;
       }
+      _load();
     });
   }
 
@@ -185,17 +217,26 @@ class _EmbedCardState extends State<EmbedCard> {
       identical(EmbedLiveRegistry.instance.owner, this) &&
       _visible &&
       !_covered &&
-      _consent.modeFor(_type) != EmbedMode.off;
+      _allowed;
 
   Future<void> _load() async {
     if (_live || _failed) return;
-    if (!_visible || _covered || _consent.modeFor(_type) == EmbedMode.off) {
+    if (!_visible || _covered || !_allowed) {
       return;
     }
     final generation = ++_generation;
     final policy = ArtifactHtmlNavigationPolicy(
       launchExternal: widget.launchExternal,
     );
+    // Read the theme before the awaits: BuildContext must not cross them.
+    final isArtifactPreview = _previewsArtifact;
+    final themeCss = isArtifactPreview
+        ? artifactThemeCss(
+            Theme.of(context).hermes,
+            dark: Theme.of(context).brightness == Brightness.dark,
+            fontFamily: DefaultTextStyle.of(context).style.fontFamily,
+          )
+        : null;
     final controller = WebViewController(
       onPermissionRequest: denyArtifactPermissionRequest,
     );
@@ -210,8 +251,21 @@ class _EmbedCardState extends State<EmbedCard> {
         settingsFor: widget.settingsFor,
       );
       if (!_stillWanted(generation)) return;
+      final htmlSource = widget.htmlSource;
       final svg = _sanitizedSvg;
-      if (svg != null) {
+      if (htmlSource != null) {
+        // Same locked WebView as the viewer: inline styles and scripts run,
+        // nothing can be fetched, no JS channel and no way out of the document.
+        final html = await htmlSource();
+        if (!_stillWanted(generation)) return;
+        await controller.loadHtmlString(
+          buildGuardedArtifactHtml(
+            html,
+            scriptsEnabled: true,
+            themeCss: themeCss,
+          ),
+        );
+      } else if (svg != null) {
         await controller.loadHtmlString(buildGuardedSvgHtml(svg));
       } else {
         // The page itself needs scripts; it still gets no JavaScript channel,
@@ -269,6 +323,11 @@ class _EmbedCardState extends State<EmbedCard> {
   double _heightFor(double width) {
     final d = widget.descriptor;
     final screen = MediaQuery.sizeOf(context).height;
+    if (widget.htmlSource != null) {
+      // An artifact page has no declared aspect ratio: give it a phone-shaped
+      // frame it can scroll inside, never taller than roughly half the screen.
+      return (width * 1.02).clamp(200.0, screen / 2);
+    }
     if (d == null) {
       final aspect = _svgAspect(_sanitizedSvg ?? '');
       return (width / aspect).clamp(48.0, screen / 3);
@@ -279,11 +338,11 @@ class _EmbedCardState extends State<EmbedCard> {
 
   @override
   Widget build(BuildContext context) {
-    final mode = _consent.modeFor(_type);
-    if (mode == EmbedMode.off || _failed) return widget.fallback;
+    if (!_allowed || _failed) return widget.fallback;
     final colors = Theme.of(context).hermes;
     final s = Strings.of(context);
-    final maxWidth = widget.descriptor?.maxWidth ?? 640;
+    final maxWidth =
+        widget.descriptor?.maxWidth ?? (_previewsArtifact ? 720.0 : 640.0);
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 6),
       child: Align(
@@ -315,7 +374,8 @@ class _EmbedCardState extends State<EmbedCard> {
                         child: InkWell(
                           key: const ValueKey('embed-placeholder'),
                           onTap: _load,
-                          onLongPress: _chooseMode,
+                          // An artifact preview has no consent choice to offer.
+                          onLongPress: _previewsArtifact ? null : _chooseMode,
                           child: Center(
                             child: Padding(
                               padding: const EdgeInsets.all(12),
@@ -323,21 +383,28 @@ class _EmbedCardState extends State<EmbedCard> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Icon(
-                                    Icons.play_circle_outline_rounded,
+                                    _previewsArtifact
+                                        ? Icons.web_asset_outlined
+                                        : Icons.play_circle_outline_rounded,
                                     color: colors.textSecondary,
                                   ),
                                   const SizedBox(height: 6),
                                   Text(
-                                    _type == EmbedType.svg
+                                    _previewsArtifact
+                                        ? widget.htmlTitle ?? _label
+                                        : _type == EmbedType.svg
                                         ? s.embedSvgLabel
                                         : s.embedLoad(_label),
                                     textAlign: TextAlign.center,
+                                    maxLines: 2,
+                                    overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
                                       fontWeight: FontWeight.w600,
                                       color: colors.textPrimary,
                                     ),
                                   ),
-                                  if (_type != EmbedType.svg) ...[
+                                  if (!_previewsArtifact &&
+                                      _type != EmbedType.svg) ...[
                                     const SizedBox(height: 2),
                                     Text(
                                       s.embedLoadNote(_label),
