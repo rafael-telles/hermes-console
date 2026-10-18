@@ -13612,7 +13612,7 @@ class _ChatScreenState extends State<ChatScreen>
       setState(() {});
       _notifyOpenSessionArchive(strings, archived, localOnly: false);
     } on DashboardHttpException catch (error) {
-      if (error.statusCode == 404 || error.statusCode == 405) {
+      if (dashboardRefusesSidebarWrite(error)) {
         await settleLocal();
         return;
       }

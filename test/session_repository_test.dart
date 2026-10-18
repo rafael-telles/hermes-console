@@ -1062,6 +1062,54 @@ void main() {
     expect(gatewayRequests, 0);
   });
 
+  test(
+    'un rechazo del store por propiedad es una preferencia local, no un fallo '
+    'de sincronización',
+    () {
+      // Sin ruta (runtime viejo) y rechazo por propiedad: el servidor nunca
+      // aceptará la escritura de esta cuenta, así que el archivo queda aquí.
+      expect(
+        dashboardRefusesSidebarWrite(const DashboardHttpException(404)),
+        isTrue,
+      );
+      expect(
+        dashboardRefusesSidebarWrite(const DashboardHttpException(405)),
+        isTrue,
+      );
+      expect(
+        dashboardRefusesSidebarWrite(
+          const DashboardHttpException(
+            403,
+            body: '{"detail":"permission_denied"}',
+          ),
+        ),
+        isTrue,
+      );
+
+      // Otros 403/409 sí son fallos que hay que reportar: un perfil equivocado
+      // o un fence viejo no convierten la escritura en una preferencia local.
+      expect(
+        dashboardRefusesSidebarWrite(
+          const DashboardHttpException(
+            403,
+            body: '{"detail":"profile_mismatch"}',
+          ),
+        ),
+        isFalse,
+      );
+      expect(
+        dashboardRefusesSidebarWrite(
+          const DashboardHttpException(
+            409,
+            body: '{"detail":"revision_conflict"}',
+          ),
+        ),
+        isFalse,
+      );
+      expect(dashboardRefusesSidebarWrite(TimeoutException('x')), isFalse);
+    },
+  );
+
   test('pin usa PATCH del lineage root y conserva el perfil', () async {
     http.Request? pinRequest;
     final dashboardHttp = MockClient((request) async {

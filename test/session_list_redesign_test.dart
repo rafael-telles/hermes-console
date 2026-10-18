@@ -285,11 +285,16 @@ void main() {
   });
 
   /// Monta la pantalla con `rows` como biblioteca autoritativa del Dashboard.
+  ///
+  /// `sidebarWrite` decide la respuesta del escritor de sesión: por defecto
+  /// 404 (servidor sin la ruta), y los tests de un rechazo del servidor pasan
+  /// su propio `http.Response` (p. ej. 403 `permission_denied`).
   Future<ConnectionManager> pump(
     WidgetTester tester,
     List<Map<String, dynamic>> rows, {
     ActiveChatService? activeChats,
     DateTime Function()? clock,
+    http.Response? sidebarWrite,
   }) async {
     final prefs = await SharedPreferences.getInstance();
     final manager = await ConnectionManager.create(prefs);
@@ -300,6 +305,22 @@ void main() {
       httpClientOverride: MockClient((request) async {
         if (request.method == 'GET' && request.url.path == '/api/sessions') {
           return _page(rows);
+        }
+        if (sidebarWrite != null &&
+            request.method == 'GET' &&
+            request.url.path.endsWith('/mutation-snapshot')) {
+          return http.Response(
+            jsonEncode({
+              'session_id': '',
+              'exists': true,
+              'runtime_revision': 0,
+              'runtime_generation': 0,
+            }),
+            200,
+          );
+        }
+        if (request.method == 'PATCH' && sidebarWrite != null) {
+          return sidebarWrite;
         }
         return http.Response('{}', 404);
       }),
@@ -684,6 +705,54 @@ void main() {
     expect(find.text('Deploy a staging'), findsNothing);
     expect(archive.isArchived('chat-1'), isFalse);
   });
+
+  testWidgets(
+    'un rechazo del servidor por propiedad archiva solo en el móvil, sin '
+    'acusar un fallo de sincronización',
+    (tester) async {
+      tester.view.physicalSize = const Size(1170, 2532);
+      tester.view.devicePixelRatio = 3;
+      addTearDown(tester.view.resetPhysicalSize);
+      addTearDown(tester.view.resetDevicePixelRatio);
+
+      // La conversación pertenece a otro login: el store responde 403
+      // permission_denied a toda escritura de esta cuenta y nunca la aceptará.
+      await pump(tester, [
+        _row(
+          'chat-1',
+          title: 'Descubrir la contraseña del panel',
+          lastActive: nowSeconds() - 86400,
+        ),
+        _row('chat-2', title: 'Informe de costes', lastActive: nowSeconds()),
+      ], sidebarWrite: http.Response('{"detail":"permission_denied"}', 403));
+      await _pumpUntil(tester, find.text('Descubrir la contraseña del panel'));
+      final strings = Strings.of(
+        tester.element(find.byType(SessionListScreen)),
+      );
+
+      final gesture = await tester.startGesture(
+        tester.getCenter(find.text('Descubrir la contraseña del panel')),
+      );
+      await gesture.moveBy(const Offset(24, 0));
+      await gesture.moveBy(const Offset(140, 0));
+      await tester.pump();
+      expect(find.text(strings.slMenuArchive), findsWidgets);
+      await gesture.moveBy(const Offset(300, 0));
+      await gesture.up();
+      await _settle(tester);
+
+      // Sale de la lista de este dispositivo y el aviso dice la verdad: la
+      // preferencia queda aquí, porque el servidor no puede sincronizarla.
+      expect(find.text('Descubrir la contraseña del panel'), findsNothing);
+      expect(find.text(strings.slArchivedLocalOnly), findsOneWidget);
+      expect(find.text(strings.slArchiveSyncFailed), findsNothing);
+
+      final prefs = await SharedPreferences.getInstance();
+      final archive = await SessionArchive.load(prefs, _connectionId);
+      await archive.remoteStateSettled;
+      expect(archive.isArchived('chat-1'), isTrue);
+    },
+  );
 
   testWidgets('la lista reserva hueco inferior para el dock flotante', (
     tester,

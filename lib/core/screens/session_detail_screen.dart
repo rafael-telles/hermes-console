@@ -263,7 +263,7 @@ class _SessionDetailScreenState extends State<SessionDetailScreen> {
             : Strings.of(context).slRestored,
       );
     } on DashboardHttpException catch (error) {
-      if (error.statusCode == 404 || error.statusCode == 405) {
+      if (dashboardRefusesSidebarWrite(error)) {
         if (archived) {
           await _archive!.archiveSession(_session);
         } else if (!_session.archived) {
