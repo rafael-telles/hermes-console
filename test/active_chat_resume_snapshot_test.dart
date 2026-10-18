@@ -5685,6 +5685,58 @@ void main() {
     },
   );
 
+  test(
+    'los archivos que anuncia una respuesta llegan al índice de artefactos',
+    () async {
+      const previewPath =
+          '/home/rafael/.hermes/cache/scratch/artefato-teste.html';
+      const mediaPath = '/home/rafael/.hermes/cache/scratch/notas.csv';
+      final gateway = _SnapshotGateway()
+        ..snapshot = _snapshot({
+          'session_id': 'runtime-reply-artifacts',
+          'session_key': 'stored-chat',
+          'messages': [
+            {
+              'role': 'user',
+              'message_id': 'message-ask',
+              'content': 'crea un artefacto',
+            },
+            {
+              'role': 'assistant',
+              'message_id': 'message-preview',
+              'content':
+                  'Artefacto listo:\n\n'
+                  '::preview{file="$previewPath"}\n\n'
+                  'La prosa alrededor nunca se indexa.',
+            },
+            {
+              'role': 'assistant',
+              'message_id': 'message-media',
+              'content': 'Y el CSV:\n\nMEDIA:$mediaPath\n',
+            },
+          ],
+        });
+      final chat = _chat('resume-reply-artifacts', gateway);
+      addTearDown(chat.dispose);
+
+      await chat.loadMessages();
+
+      final artifacts = chat.resolveSessionArtifacts();
+      expect(artifacts.map((artifact) => artifact.displayName), [
+        'artefato-teste.html',
+        'notas.csv',
+      ]);
+      expect(artifacts.map((artifact) => artifact.managedReference), [
+        previewPath,
+        mediaPath,
+      ]);
+      expect(artifacts.map((artifact) => artifact.primarySource.messageId), [
+        'message-preview',
+        'message-media',
+      ]);
+    },
+  );
+
   test('4007 al cargar usa REST pero nunca crea', () async {
     final gateway = _SnapshotGateway()
       ..resumeExistingError = const TuiGatewayRpcError(

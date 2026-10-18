@@ -528,9 +528,7 @@ bool _rawMessageMayContainArtifact(Map<String, dynamic> message) {
   final content = message['content'];
   if (content is Map || content is List) return true;
   final role = message['role']?.toString().toLowerCase();
-  if (role == 'tool' && content is String && content.contains('MEDIA:')) {
-    return true;
-  }
+  if (_mentionsArtifactDirective(content)) return true;
   final context = message['context'];
   if (role == 'tool' && (context is Map || context is List)) return true;
   for (final key in _artifactContainerKeys) {
@@ -540,13 +538,21 @@ bool _rawMessageMayContainArtifact(Map<String, dynamic> message) {
   return false;
 }
 
+/// Cheap, string-only probe of the two directives the chat renders as a file
+/// card. It is deliberately role-agnostic: a reply that announces a generated
+/// file (`::preview{file="…"}` or `MEDIA:`) has to reach the index, not only a
+/// tool result. Whole-line fencing and path validation stay in
+/// [GeneratedMediaService]; prose is dropped later by the projection.
+bool _mentionsArtifactDirective(Object? content) =>
+    content is String &&
+    (content.contains('MEDIA:') || content.contains('::preview'));
+
 bool _messageMayContainArtifact(DesktopSessionMessage message) =>
     message.content is Map ||
     message.content is List ||
-    // Text tool results announce generated files with `MEDIA:` lines.
-    (message.role == DesktopSessionMessageRole.tool &&
-        message.content is String &&
-        (message.content as String).contains('MEDIA:')) ||
+    // Same directive probe as [_rawMessageMayContainArtifact]: the card renders
+    // from any message, so the index has to see the message it came from.
+    _mentionsArtifactDirective(message.content) ||
     message.artifactContainers.isNotEmpty ||
     (message.role == DesktopSessionMessageRole.tool &&
         (message.context is Map || message.context is List));
