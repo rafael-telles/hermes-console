@@ -560,6 +560,25 @@ class GeneratedMediaService {
     return const [];
   }
 
+  /// Canonical `MEDIA:` and `::preview{file="…"}` directives carried by a text
+  /// message, assistant prose included: exactly the directives the chat renders
+  /// as a file card. Only whole-line directives outside code fences count, and
+  /// every target goes through the same path/URL validation as
+  /// [referenceFromSource]; the prose around them is never returned.
+  static List<GeneratedMediaReference> referencesFromText(Object? raw) {
+    if (raw is! String) return const [];
+    if (!raw.contains('MEDIA:') && !raw.contains('::preview')) return const [];
+    final references = <GeneratedMediaReference>[];
+    final seen = <String>{};
+    for (final segment in parseSegments(raw)) {
+      if (segment is! GeneratedMediaFileSegment) continue;
+      if (seen.add(segment.reference.source)) {
+        references.add(segment.reference);
+      }
+    }
+    return List<GeneratedMediaReference>.unmodifiable(references);
+  }
+
   /// Canonical `MEDIA:` directives carried by a plain-text tool result (TTS,
   /// MCP image/audio blocks, custom tools), plus the JSON `media_tag` field
   /// that some tools return. Only whole-line directives outside code fences
