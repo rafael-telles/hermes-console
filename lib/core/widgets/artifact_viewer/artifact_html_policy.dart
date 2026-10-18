@@ -119,11 +119,23 @@ final RegExp _leadingDoctype = RegExp(
 
 /// Wraps [html] with the guard CSP (and the `window.open` lock when scripts
 /// are on), keeping a leading `<!doctype>` first so standards mode survives.
-String buildGuardedArtifactHtml(String html, {required bool scriptsEnabled}) {
+///
+/// [themeCss] is optional host styling (see `artifact_theme_css.dart`) placed
+/// after the guard and before the document, so the guest's own rules — same
+/// specificity, later in the cascade — still win over the injected defaults.
+String buildGuardedArtifactHtml(
+  String html, {
+  required bool scriptsEnabled,
+  String? themeCss,
+}) {
   final csp = artifactContentSecurityPolicy(scriptsEnabled: scriptsEnabled);
+  final theme = themeCss == null || themeCss.trim().isEmpty
+      ? ''
+      : '<style id="hermes-artifact-theme">$themeCss</style>';
   final guard =
       '<meta http-equiv="Content-Security-Policy" content="$csp">'
-      '${scriptsEnabled ? _windowOpenLock : ''}';
+      '${scriptsEnabled ? _windowOpenLock : ''}'
+      '$theme';
   final doctype = _leadingDoctype.firstMatch(html);
   if (doctype == null) return '$guard$html';
   return '${doctype.group(0)}$guard${html.substring(doctype.end)}';

@@ -17,6 +17,7 @@ import '../../theme/app_theme.dart';
 import '../chat/chat_markdown_body.dart';
 import '../hermes_app_bar.dart';
 import 'artifact_html_policy.dart';
+import 'artifact_theme_css.dart';
 import 'code_view_prefs.dart';
 import '../console_loader.dart';
 import '../../feedback/feedback_policy.dart';
@@ -471,13 +472,25 @@ class _HtmlArtifactViewState extends State<_HtmlArtifactView> {
   /// document, not from asking the user: see [ArtifactHtmlNavigationPolicy].
   Future<void> _load() async {
     final scripts = !widget.svg;
+    // Read the theme before the awaits: BuildContext must not cross them.
+    final themeCss = artifactThemeCss(
+      Theme.of(context).hermes,
+      dark: Theme.of(context).brightness == Brightness.dark,
+      fontFamily: DefaultTextStyle.of(context).style.fontFamily,
+    );
     await _controller.setJavaScriptMode(
       scripts ? JavaScriptMode.unrestricted : JavaScriptMode.disabled,
     );
     await _controller.loadHtmlString(
       widget.svg
           ? buildGuardedSvgHtml(widget.html)
-          : buildGuardedArtifactHtml(widget.html, scriptsEnabled: scripts),
+          : buildGuardedArtifactHtml(
+              widget.html,
+              scriptsEnabled: scripts,
+              // A page written for Desktop reads the host frame's vars; without
+              // them it renders as bare HTML here.
+              themeCss: themeCss,
+            ),
     );
   }
 
