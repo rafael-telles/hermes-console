@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 import 'package:flutter/foundation.dart';
 import 'package:path_provider/path_provider.dart';
 
+import 'managed_file_stat_service.dart';
 import 'transcript_directive_parser.dart';
 
 enum GeneratedMediaKind { image, video, audio, file }
@@ -61,6 +62,10 @@ class _GeneratedMediaAutoLoadWaiter {
   final Completer<void> completer = Completer<void>();
 }
 
+/// Reads the server-reported `(size, mtime)` identity of a managed file.
+typedef GeneratedMediaStatFetcher =
+    Future<ManagedFileStat?> Function(String path);
+
 class GeneratedMediaReference {
   final String source;
   final GeneratedMediaKind kind;
@@ -85,6 +90,29 @@ class GeneratedMediaReference {
     this.modifiedAt,
     this.htmlPreview = false,
   });
+
+  /// True when the cache key would degrade to the bare server path: the
+  /// transcript directive carried no metadata, so a file rewritten in place
+  /// cannot be told apart from the cached revision without asking the host.
+  bool get needsStatRevalidation =>
+      sourceKind == GeneratedMediaSourceKind.serverPath &&
+      (sizeBytes == null || modifiedAt == null);
+
+  /// [this] with the host-reported identity filled in, so the private copy is
+  /// keyed by the concrete revision instead of the path alone.
+  GeneratedMediaReference withStatIdentity({
+    required int sizeBytes,
+    DateTime? modifiedAt,
+  }) => GeneratedMediaReference(
+    source: source,
+    kind: kind,
+    sourceKind: sourceKind,
+    displayName: displayName,
+    mimeType: mimeType,
+    sizeBytes: sizeBytes,
+    modifiedAt: modifiedAt,
+    htmlPreview: htmlPreview,
+  );
 }
 
 sealed class GeneratedMediaSegment {
@@ -951,6 +979,7 @@ class GeneratedMediaService {
     Future<Uint8List> Function(String path)? fetchServerPath,
     Future<void> Function(String path, File destination)? fetchServerPathToFile,
     GeneratedMediaStreamingFetcher? fetchServerPathToFileWithProgress,
+    GeneratedMediaStatFetcher? statServerPath,
     GeneratedMediaProgress? onProgress,
     bool Function()? isCancelled,
     Directory? baseDir,
@@ -971,6 +1000,7 @@ class GeneratedMediaService {
       fetchServerPath: fetchServerPath,
       fetchServerPathToFile: fetchServerPathToFile,
       fetchServerPathToFileWithProgress: fetchServerPathToFileWithProgress,
+      statServerPath: statServerPath,
       onProgress: onProgress,
       isCancelled: isCancelled,
       baseDir: baseDir,
@@ -989,12 +1019,39 @@ class GeneratedMediaService {
     return future;
   }
 
+  /// [reference] with the host's current `(size, mtime)` folded in, when the
+  /// caller supplied a stat fetcher and the reference lacks that metadata.
+  ///
+  /// Fails soft: no fetcher, an https/local source, a host that refuses the
+  /// listing or a reference that already carries identity all return it
+  /// unchanged, which keeps the pre-existing path-keyed cache behaviour.
+  static Future<GeneratedMediaReference> _withServerIdentity(
+    GeneratedMediaReference reference,
+    GeneratedMediaStatFetcher? statServerPath,
+  ) async {
+    if (statServerPath == null || !reference.needsStatRevalidation) {
+      return reference;
+    }
+    ManagedFileStat? stat;
+    try {
+      stat = await statServerPath(reference.source);
+    } catch (_) {
+      stat = null;
+    }
+    if (stat == null) return reference;
+    return reference.withStatIdentity(
+      sizeBytes: stat.sizeBytes,
+      modifiedAt: stat.modifiedAt,
+    );
+  }
+
   static Future<File> _ensureDownloaded(
     String connectionId,
     GeneratedMediaReference reference, {
     Future<Uint8List> Function(String path)? fetchServerPath,
     Future<void> Function(String path, File destination)? fetchServerPathToFile,
     GeneratedMediaStreamingFetcher? fetchServerPathToFileWithProgress,
+    GeneratedMediaStatFetcher? statServerPath,
     GeneratedMediaProgress? onProgress,
     bool Function()? isCancelled,
     Directory? baseDir,
@@ -1002,18 +1059,25 @@ class GeneratedMediaService {
     if (isCancelled?.call() ?? false) {
       throw const GeneratedMediaDownloadCancelled();
     }
+    // A directive reference carries no metadata, so without asking the host for
+    // the current identity the cache key is just the path and a file rewritten
+    // in place is served from the previous revision forever. One metadata read
+    // (no body) turns the path-only key into a concrete `(size, mtime)` one; if
+    // the host can't answer, the reference is left as-is and the cached copy is
+    // served exactly as before.
+    final effective = await _withServerIdentity(reference, statServerPath);
     final root =
         baseDir ?? (_cacheRoot = await getApplicationSupportDirectory());
-    final target = _cacheTarget(root, connectionId, reference);
+    final target = _cacheTarget(root, connectionId, effective);
     final directory = target.parent;
     await directory.create(recursive: true);
 
     if (await target.exists()) {
       try {
         final length = await target.length();
-        if (length > 0 && length <= _maxBytes(reference.kind)) {
+        if (length > 0 && length <= _maxBytes(effective.kind)) {
           final probe = await _readPrefix(target, 32);
-          if (validateBytes(probe, reference.kind)) {
+          if (validateBytes(probe, effective.kind)) {
             if (isCancelled?.call() ?? false) {
               throw const GeneratedMediaDownloadCancelled();
             }
@@ -1034,20 +1098,20 @@ class GeneratedMediaService {
       '${target.path}.tmp-${DateTime.now().microsecondsSinceEpoch}',
     );
     try {
-      if (reference.sourceKind == GeneratedMediaSourceKind.serverPath &&
+      if (effective.sourceKind == GeneratedMediaSourceKind.serverPath &&
           fetchServerPathToFileWithProgress != null) {
         await fetchServerPathToFileWithProgress(
-          reference.source,
+          effective.source,
           temporary,
           onProgress ?? (_, _) {},
           isCancelled ?? () => false,
         );
-      } else if (reference.sourceKind == GeneratedMediaSourceKind.serverPath &&
+      } else if (effective.sourceKind == GeneratedMediaSourceKind.serverPath &&
           fetchServerPathToFile != null) {
-        await fetchServerPathToFile(reference.source, temporary);
-      } else if (reference.sourceKind == GeneratedMediaSourceKind.serverPath) {
-        final bytes = await fetchServerPath!(reference.source);
-        if (bytes.isEmpty || bytes.length > _maxBytes(reference.kind)) {
+        await fetchServerPathToFile(effective.source, temporary);
+      } else if (effective.sourceKind == GeneratedMediaSourceKind.serverPath) {
+        final bytes = await fetchServerPath!(effective.source);
+        if (bytes.isEmpty || bytes.length > _maxBytes(effective.kind)) {
           throw const FormatException('generated media exceeds its size limit');
         }
         if (isCancelled?.call() ?? false) {
@@ -1057,8 +1121,8 @@ class GeneratedMediaService {
         onProgress?.call(bytes.length, bytes.length);
       } else {
         await _downloadHttpsToFile(
-          reference.source,
-          reference.kind,
+          effective.source,
+          effective.kind,
           temporary,
           onProgress: onProgress,
           isCancelled: isCancelled,
@@ -1069,7 +1133,7 @@ class GeneratedMediaService {
         throw const GeneratedMediaDownloadCancelled();
       }
       final length = await temporary.length();
-      if (length <= 0 || length > _maxBytes(reference.kind)) {
+      if (length <= 0 || length > _maxBytes(effective.kind)) {
         throw const FormatException('generated media exceeds its size limit');
       }
       final probe = await _readPrefix(temporary, 32);

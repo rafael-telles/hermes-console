@@ -123,6 +123,7 @@ import '../services/turn_outbox_store.dart';
 import '../services/generated_image_fetch.dart';
 import '../services/generated_image_service.dart';
 import '../services/generated_media_service.dart';
+import '../services/managed_file_stat_service.dart';
 import '../services/media_prefetcher.dart';
 import '../services/generated_artifact_registry.dart';
 import '../services/active_profile_scope.dart';
@@ -5852,6 +5853,10 @@ class _ChatScreenState extends State<ChatScreen>
     return GeneratedMediaService.ensureDownloaded(
       userServerMediaScope,
       reference,
+      // A transcript directive carries no size/mtime, so hand the service the
+      // host's current identity: without it the cache key is the bare path and
+      // a file rewritten in place keeps opening as the revision first seen.
+      statServerPath: testFetcher != null ? null : _statServerManagedFile,
       fetchServerPathToFile: (path, destination) async {
         if (testFetcher != null) return testFetcher(path, destination);
         final client = DashboardClient.lazy(widget.connection);
@@ -5881,6 +5886,26 @@ class _ChatScreenState extends State<ChatScreen>
         }
       },
     );
+  }
+
+  /// Server-reported `(size, mtime)` of a managed path, read from the directory
+  /// listing the host already serves — one metadata request with no body.
+  /// Fails soft (null) so a host that cannot answer leaves the cached copy in
+  /// place instead of breaking an open that works today.
+  Future<ManagedFileStat?> _statServerManagedFile(String path) async {
+    final client = DashboardClient.lazy(widget.connection);
+    try {
+      return await ManagedFileStatService.resolve(
+        apiGet: (endpoint) => client.apiGet(
+          '$endpoint&profile=${Uri.encodeQueryComponent(_effectiveSessionProfile)}',
+        ),
+        path: path,
+      );
+    } catch (_) {
+      return null;
+    } finally {
+      client.close();
+    }
   }
 
   /// Same scope the generated-media disk cache is keyed by.
