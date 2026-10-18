@@ -19,7 +19,11 @@ const _page =
     '<!doctype html><html><head><style>body{margin:0}</style></head>'
     '<body><h1 id="marca">Artefato de teste</h1></body></html>';
 
-Widget _app(Widget child, {Size size = const Size(400, 800)}) => MaterialApp(
+Widget _app(
+  Widget child, {
+  Size size = const Size(400, 800),
+  bool scrollable = false,
+}) => MaterialApp(
   theme: AppTheme.fromId('dark'),
   locale: const Locale('en'),
   localizationsDelegates: Strings.localizationsDelegates,
@@ -27,10 +31,14 @@ Widget _app(Widget child, {Size size = const Size(400, 800)}) => MaterialApp(
   home: MediaQuery(
     data: MediaQueryData(size: size),
     child: Scaffold(
-      body: Align(
-        alignment: Alignment.topLeft,
-        child: SizedBox(width: 400, height: size.height, child: child),
-      ),
+      // The chat's message list is a scrollable: a content-sized artifact is
+      // unbounded vertically there, so the harness has to be too.
+      body: scrollable
+          ? SingleChildScrollView(child: SizedBox(width: 400, child: child))
+          : Align(
+              alignment: Alignment.topLeft,
+              child: SizedBox(width: 400, height: size.height, child: child),
+            ),
     ),
   ),
 );
@@ -134,6 +142,53 @@ void main() {
     // long-press surface that would write a consent mode for a provider.
     expect(find.byKey(_placeholderKey), findsNothing);
     expect(find.textContaining('Always allow'), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('sizes the frame to the page it loaded', (tester) async {
+    // A fixed-height frame cropped the page: the chat list owns the vertical
+    // drag, so the preview had no way to scroll. The frame follows the content.
+    platform.javaScriptResult = 520;
+
+    await tester.pumpWidget(_app(preview(() async => _page)));
+    await tester.pumpAndSettle();
+
+    expect(platform.last.runScripts, isNotEmpty);
+    expect(
+      tester.getSize(find.byKey(const ValueKey('embed-card-box'))).height,
+      520,
+    );
+    // The page fits, so there is nothing to open elsewhere.
+    expect(find.byKey(const ValueKey('embed-artifact-open')), findsNothing);
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a page taller than the frame offers the viewer', (tester) async {
+    platform.javaScriptResult = 9000;
+    var opened = 0;
+
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'render-check-v4.html',
+          onOpenFull: () => opened++,
+          fallback: _fallback,
+          consent: consent,
+        ),
+        scrollable: true,
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final box = tester.getSize(find.byKey(const ValueKey('embed-card-box')));
+    expect(box.height, lessThan(9000));
+    expect(find.byKey(const ValueKey('embed-artifact-open')), findsOneWidget);
+
+    tester
+        .widget<TextButton>(find.byKey(const ValueKey('embed-artifact-open')))
+        .onPressed!();
+    expect(opened, 1);
     expect(tester.takeException(), isNull);
   });
 }

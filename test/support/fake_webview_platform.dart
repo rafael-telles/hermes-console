@@ -18,12 +18,17 @@ class FakeWebViewPlatform extends WebViewPlatform {
   /// `enableZoom`, i.e. while the viewer is still configuring the WebView.
   Future<void>? holdConfigure;
 
+  /// Value every script run by a controller created here evaluates to. Lets a
+  /// test decide the document's reported height before the card even loads.
+  Object javaScriptResult = 0;
+
   @override
   PlatformWebViewController createPlatformWebViewController(
     PlatformWebViewControllerCreationParams params,
   ) {
     final controller = FakeWebViewController(params)
-      ..configureGate = holdConfigure;
+      ..configureGate = holdConfigure
+      ..javaScriptResult = javaScriptResult;
     controllers.add(controller);
     return controller;
   }
@@ -92,6 +97,17 @@ class FakeWebViewController extends PlatformWebViewController {
 
   /// Every JavaScript bridge the code under test tried to expose.
   final List<String> javaScriptChannels = [];
+
+  /// Scripts the code under test ran, and what they evaluate to. Defaults to
+  /// `0`, which reads as "the document reported no height".
+  final List<String> runScripts = [];
+  Object javaScriptResult = 0;
+
+  @override
+  Future<Object> runJavaScriptReturningResult(String javaScript) async {
+    runScripts.add(javaScript);
+    return javaScriptResult;
+  }
 
   @override
   Future<void> addJavaScriptChannel(

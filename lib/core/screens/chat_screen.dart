@@ -24369,6 +24369,14 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
           return EmbedCard(
             htmlSource: () => file.readAsString(),
             htmlTitle: widget.reference.displayName,
+            onOpenFull: () => _open(
+              context,
+              file,
+              sizeBytes,
+              onOpenExternal,
+              onShare,
+              onSave,
+            ),
             fallback: GeneratedFileCard(
               name: widget.reference.displayName,
               mimeType: widget.reference.mimeType,

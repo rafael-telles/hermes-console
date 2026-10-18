@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:math' as math;
 
 import 'package:flutter/material.dart';
 import 'package:webview_flutter/webview_flutter.dart';
@@ -59,6 +60,10 @@ class EmbedCard extends StatefulWidget {
   /// Header label of an [htmlSource] preview, i.e. the artifact's file name.
   final String? htmlTitle;
 
+  /// Opens the artifact in the full-screen viewer: shown under an
+  /// [htmlSource] preview whose page is taller than the frame may grow.
+  final VoidCallback? onOpenFull;
+
   final Widget fallback;
   final EmbedConsentStore? consent;
 
@@ -74,6 +79,7 @@ class EmbedCard extends StatefulWidget {
     this.svgSource,
     this.htmlSource,
     this.htmlTitle,
+    this.onOpenFull,
     this.consent,
     this.launchExternal,
     this.settingsFor = defaultArtifactWebViewSettings,
@@ -99,6 +105,13 @@ class _EmbedCardState extends State<EmbedCard> {
   bool _covered = false;
   ScrollPosition? _position;
   String? _sanitizedSvg;
+
+  /// Height the artifact document reported for itself, so the frame fits the
+  /// page instead of cropping it.
+  double? _contentHeight;
+
+  /// Second, delayed height read (late layout), cancelled with the card.
+  Timer? _measureTimer;
 
   /// Bumped whenever the card leaves its live state or starts a load, so a
   /// load that was already awaiting something can tell it is stale.
@@ -150,6 +163,8 @@ class _EmbedCardState extends State<EmbedCard> {
   @override
   void dispose() {
     _generation++;
+    _measureTimer?.cancel();
+    _measureTimer = null;
     _consent.removeListener(_onConsentChanged);
     _position?.removeListener(_checkVisibility);
     EmbedLiveRegistry.instance.drop(this);
@@ -182,6 +197,8 @@ class _EmbedCardState extends State<EmbedCard> {
   /// the single live slot, or consent was withdrawn. Never reloads by itself.
   void _release() {
     _generation++;
+    _measureTimer?.cancel();
+    _measureTimer = null;
     EmbedLiveRegistry.instance.drop(this);
     if (!_live && _controller == null) return;
     _controller = null;
@@ -265,6 +282,8 @@ class _EmbedCardState extends State<EmbedCard> {
             themeCss: themeCss,
           ),
         );
+        // The frame follows the page: see [_measureContent].
+        unawaited(_measureContent(generation, controller));
       } else if (svg != null) {
         await controller.loadHtmlString(buildGuardedSvgHtml(svg));
       } else {
@@ -324,8 +343,9 @@ class _EmbedCardState extends State<EmbedCard> {
     final d = widget.descriptor;
     final screen = MediaQuery.sizeOf(context).height;
     if (widget.htmlSource != null) {
-      // An artifact page has no declared aspect ratio: give it a phone-shaped
-      // frame it can scroll inside, never taller than roughly half the screen.
+      final measured = _contentHeight;
+      if (measured != null) return measured.clamp(160.0, _artifactCap(screen));
+      // Until the document reports its own height, a phone-shaped guess.
       return (width * 1.02).clamp(200.0, screen / 2);
     }
     if (d == null) {
@@ -334,6 +354,53 @@ class _EmbedCardState extends State<EmbedCard> {
     }
     if (d.aspectRatio != null) return width / d.aspectRatio!;
     return d.height ?? width * 0.56;
+  }
+
+  /// Ceiling for a content-sized artifact frame: tall pages keep a body the
+  /// chat can scroll past, and are flagged so the card offers the viewer.
+  double _artifactCap(double screen) => math.max(420.0, screen * 1.7);
+
+  bool get _artifactCapped {
+    final measured = _contentHeight;
+    if (measured == null) return false;
+    return measured > _artifactCap(MediaQuery.sizeOf(context).height);
+  }
+
+  /// Asks the document how tall it is, twice: on load and shortly after so
+  /// late layout (fonts, images) counts. The chat's own list owns the vertical
+  /// drag, so a fixed-height preview showed only the top of the page with no
+  /// way to scroll it — sizing the frame to the content is what Desktop does.
+  Future<void> _measureContent(
+    int generation,
+    WebViewController controller,
+  ) async {
+    Future<void> once() async {
+      final double? height;
+      try {
+        final raw = await controller.runJavaScriptReturningResult(
+          'Math.max(document.body?document.body.scrollHeight:0,'
+          'document.documentElement?document.documentElement.scrollHeight:0)',
+        );
+        height = raw is num
+            ? raw.toDouble()
+            : double.tryParse('$raw'.replaceAll('"', ''));
+      } catch (_) {
+        return;
+      }
+      if (height == null || height <= 0) return;
+      if (!mounted || generation != _generation) return;
+      if (_contentHeight != null && (_contentHeight! - height).abs() < 24) {
+        return;
+      }
+      setState(() => _contentHeight = height);
+    }
+
+    await once();
+    _measureTimer?.cancel();
+    _measureTimer = Timer(const Duration(milliseconds: 400), () {
+      if (!mounted || generation != _generation) return;
+      unawaited(once());
+    });
   }
 
   @override
@@ -354,74 +421,111 @@ class _EmbedCardState extends State<EmbedCard> {
                 : maxWidth;
             final height = _heightFor(width);
             final controller = _controller;
-            return SizedBox(
-              key: const ValueKey('embed-card-box'),
-              width: width,
-              height: height,
-              child: ClipRRect(
-                borderRadius: BorderRadius.circular(12),
-                child: _live && controller != null
-                    ? Listener(
-                        behavior: HitTestBehavior.translucent,
-                        onPointerUp: (_) => _policy?.registerUserTap(),
-                        child: WebViewWidget(
-                          key: const ValueKey('embed-webview'),
-                          controller: controller,
-                        ),
-                      )
-                    : Material(
-                        color: colors.surfaceVariant.withValues(alpha: 0.3),
-                        child: InkWell(
-                          key: const ValueKey('embed-placeholder'),
-                          onTap: _load,
-                          // An artifact preview has no consent choice to offer.
-                          onLongPress: _previewsArtifact ? null : _chooseMode,
-                          child: Center(
-                            child: Padding(
-                              padding: const EdgeInsets.all(12),
-                              child: Column(
-                                mainAxisSize: MainAxisSize.min,
-                                children: [
-                                  Icon(
-                                    _previewsArtifact
-                                        ? Icons.web_asset_outlined
-                                        : Icons.play_circle_outline_rounded,
-                                    color: colors.textSecondary,
+            final frame = ClipRRect(
+              borderRadius: BorderRadius.circular(12),
+              child: _live && controller != null
+                  ? Listener(
+                      behavior: HitTestBehavior.translucent,
+                      onPointerUp: (_) => _policy?.registerUserTap(),
+                      child: WebViewWidget(
+                        key: const ValueKey('embed-webview'),
+                        controller: controller,
+                      ),
+                    )
+                  : Material(
+                      color: colors.surfaceVariant.withValues(alpha: 0.3),
+                      child: InkWell(
+                        key: const ValueKey('embed-placeholder'),
+                        onTap: _load,
+                        // An artifact preview has no consent choice to offer.
+                        onLongPress: _previewsArtifact ? null : _chooseMode,
+                        child: Center(
+                          child: Padding(
+                            padding: const EdgeInsets.all(12),
+                            child: Column(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Icon(
+                                  _previewsArtifact
+                                      ? Icons.web_asset_outlined
+                                      : Icons.play_circle_outline_rounded,
+                                  color: colors.textSecondary,
+                                ),
+                                const SizedBox(height: 6),
+                                Text(
+                                  _previewsArtifact
+                                      ? widget.htmlTitle ?? _label
+                                      : _type == EmbedType.svg
+                                      ? s.embedSvgLabel
+                                      : s.embedLoad(_label),
+                                  textAlign: TextAlign.center,
+                                  maxLines: 2,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: TextStyle(
+                                    fontWeight: FontWeight.w600,
+                                    color: colors.textPrimary,
                                   ),
-                                  const SizedBox(height: 6),
+                                ),
+                                if (!_previewsArtifact &&
+                                    _type != EmbedType.svg) ...[
+                                  const SizedBox(height: 2),
                                   Text(
-                                    _previewsArtifact
-                                        ? widget.htmlTitle ?? _label
-                                        : _type == EmbedType.svg
-                                        ? s.embedSvgLabel
-                                        : s.embedLoad(_label),
+                                    s.embedLoadNote(_label),
                                     textAlign: TextAlign.center,
-                                    maxLines: 2,
-                                    overflow: TextOverflow.ellipsis,
                                     style: TextStyle(
-                                      fontWeight: FontWeight.w600,
-                                      color: colors.textPrimary,
+                                      fontSize: 11.5,
+                                      color: colors.textSecondary,
                                     ),
                                   ),
-                                  if (!_previewsArtifact &&
-                                      _type != EmbedType.svg) ...[
-                                    const SizedBox(height: 2),
-                                    Text(
-                                      s.embedLoadNote(_label),
-                                      textAlign: TextAlign.center,
-                                      style: TextStyle(
-                                        fontSize: 11.5,
-                                        color: colors.textSecondary,
-                                      ),
-                                    ),
-                                  ],
                                 ],
-                              ),
+                              ],
                             ),
                           ),
                         ),
                       ),
-              ),
+                    ),
+            );
+            if (!_previewsArtifact) {
+              return SizedBox(
+                key: const ValueKey('embed-card-box'),
+                width: width,
+                height: height,
+                child: frame,
+              );
+            }
+            return Column(
+              key: const ValueKey('embed-card-box'),
+              crossAxisAlignment: CrossAxisAlignment.stretch,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                SizedBox(width: width, height: height, child: frame),
+                if (_artifactCapped && widget.onOpenFull != null)
+                  // The page is taller than the frame may grow; the rest is one
+                  // tap away instead of hidden.
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            widget.htmlTitle ?? _label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: TextStyle(
+                              fontSize: 11.5,
+                              color: colors.textSecondary,
+                            ),
+                          ),
+                        ),
+                        TextButton(
+                          key: const ValueKey('embed-artifact-open'),
+                          onPressed: widget.onOpenFull,
+                          child: Text(s.commonOpen),
+                        ),
+                      ],
+                    ),
+                  ),
+              ],
             );
           },
         ),
