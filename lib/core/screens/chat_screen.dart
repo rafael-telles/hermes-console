@@ -24248,6 +24248,10 @@ class _GeneratedMediaSlot extends StatefulWidget {
 }
 
 class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
+  /// Identity of the artifact copy this card last saw on the host, so a
+  /// same-length rewrite is still noticed.
+  ManagedFileStat? _artifactIdentity;
+
   String _downloadErrorLabel(BuildContext context, Object error) {
     final strings = Strings.of(context);
     if (error is DashboardAuthException &&
@@ -24400,7 +24404,16 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
               }
               final before = await file.length();
               final stat = await state.statManagedFile(reference.source);
-              if (stat == null || stat.sizeBytes == before) return null;
+              if (stat == null) return null;
+              final seen = _artifactIdentity;
+              _artifactIdentity = stat;
+              if (!managedFileCopyChanged(
+                loadedSizeBytes: before,
+                seen: seen,
+                current: stat,
+              )) {
+                return null;
+              }
               final fresh = await state.downloadGeneratedMedia(reference);
               return fresh.readAsString();
             },

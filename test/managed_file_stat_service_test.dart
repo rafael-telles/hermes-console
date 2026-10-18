@@ -119,6 +119,71 @@ void main() {
     expect(calls, 0);
   });
 
+  group('managedFileCopyChanged', () {
+    ManagedFileStat stat(int size, {DateTime? at}) =>
+        ManagedFileStat(sizeBytes: size, modifiedAt: at);
+
+    test('a different size is always a change', () {
+      expect(
+        managedFileCopyChanged(
+          loadedSizeBytes: 100,
+          seen: stat(100, at: DateTime.utc(2026, 10, 18, 20, 13)),
+          current: stat(120, at: DateTime.utc(2026, 10, 18, 20, 13)),
+        ),
+        isTrue,
+      );
+    });
+
+    test('a same-length rewrite is caught by the modification time', () {
+      // "Atualizado às 20:13" -> "Atualizado às 20:14" keeps the byte count.
+      expect(
+        managedFileCopyChanged(
+          loadedSizeBytes: 100,
+          seen: stat(100, at: DateTime.utc(2026, 10, 18, 20, 13)),
+          current: stat(100, at: DateTime.utc(2026, 10, 18, 20, 14)),
+        ),
+        isTrue,
+      );
+    });
+
+    test('the same size and time is not a change', () {
+      final at = DateTime.utc(2026, 10, 18, 20, 13);
+      expect(
+        managedFileCopyChanged(
+          loadedSizeBytes: 100,
+          seen: stat(100, at: at),
+          current: stat(100, at: at),
+        ),
+        isFalse,
+      );
+    });
+
+    test(
+      'the first look establishes a baseline instead of reporting change',
+      () {
+        expect(
+          managedFileCopyChanged(
+            loadedSizeBytes: 100,
+            seen: null,
+            current: stat(100, at: DateTime.utc(2026, 10, 18, 20, 13)),
+          ),
+          isFalse,
+        );
+      },
+    );
+
+    test('without a reported time the size is all there is', () {
+      expect(
+        managedFileCopyChanged(
+          loadedSizeBytes: 100,
+          seen: stat(100),
+          current: stat(100),
+        ),
+        isFalse,
+      );
+    });
+  });
+
   test('accepts a filename without a reported mtime', () async {
     final stat = await ManagedFileStatService.resolve(
       apiGet: apiReturning(

@@ -12,6 +12,26 @@ class ManagedFileStat {
   const ManagedFileStat({required this.sizeBytes, this.modifiedAt});
 }
 
+/// Whether the host's copy of a file moved since the copy in hand was loaded.
+///
+/// Size alone is not enough: a file the agent edits in place often keeps the
+/// same length (`Atualizado às 20:13` → `Atualizado às 20:14`), so the
+/// modification time is what tells those apart. [seen] is the identity recorded
+/// by an earlier look (null before the first one); [loadedSizeBytes] is the size
+/// of the copy already in hand, which is the baseline that first look compares
+/// against.
+bool managedFileCopyChanged({
+  required int loadedSizeBytes,
+  required ManagedFileStat? seen,
+  required ManagedFileStat current,
+}) {
+  if (current.sizeBytes != loadedSizeBytes) return true;
+  final now = current.modifiedAt;
+  if (now == null) return false;
+  final before = seen?.modifiedAt;
+  return before != null && before != now;
+}
+
 /// Resolves a managed file's `(size, mtime)` from the directory listing the
 /// host already exposes (`GET /api/files?path=<dir>` — one metadata request,
 /// no body bytes).
