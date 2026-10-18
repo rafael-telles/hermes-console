@@ -5889,9 +5889,15 @@ class _ChatScreenState extends State<ChatScreen>
     );
   }
 
+  /// Server-reported `(size, mtime)` for a managed path: the download paths
+  /// revalidate with it, and the artifact preview asks after every accepted
+  /// widget prompt to know whether the host's copy changed.
+  Future<ManagedFileStat?> statManagedFile(String path) =>
+      _statManagedFile(widget.connection, _effectiveSessionProfile, path);
+
   /// Server-reported `(size, mtime)` for a path a user attachment opened.
   Future<ManagedFileStat?> _statServerManagedFile(String path) =>
-      _statManagedFile(widget.connection, _effectiveSessionProfile, path);
+      statManagedFile(path);
 
   /// Server-reported `(size, mtime)` of a managed path, read from the directory
   /// listing the host already serves — one metadata request with no body.
@@ -24385,6 +24391,19 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
             // The page's one voice: its prompt becomes a hidden user turn, so
             // it reaches the agent without taking a bubble (Desktop's rule).
             onAgentPrompt: state.sendArtifactIntent,
+            // And the other half: if the agent rewrote the artifact in answer,
+            // the frame comes back with the new page instead of the old one.
+            onAgentAnswered: () async {
+              final reference = widget.reference;
+              if (reference.sourceKind != GeneratedMediaSourceKind.serverPath) {
+                return null;
+              }
+              final before = await file.length();
+              final stat = await state.statManagedFile(reference.source);
+              if (stat == null || stat.sizeBytes == before) return null;
+              final fresh = await state.downloadGeneratedMedia(reference);
+              return fresh.readAsString();
+            },
             fallback: GeneratedFileCard(
               name: widget.reference.displayName,
               mimeType: widget.reference.mimeType,

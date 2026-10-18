@@ -386,4 +386,79 @@ void main() {
     expect(delivered, isEmpty);
     expect(platform.last.runJavaScriptCalls.single, contains('"too_long"'));
   });
+
+  testWidgets('an answered prompt reloads the artifact the agent rewrote', (
+    tester,
+  ) async {
+    final loads = <String>[];
+    var asked = 0;
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async {
+            loads.add('load-$asked');
+            return _page;
+          },
+          htmlTitle: 'painel.html',
+          onAgentPrompt: (prompt) async => true,
+          onAgentAnswered: () async {
+            asked++;
+            // The agent needs a moment: only the second look sees the rewrite.
+            if (asked < 2) return null;
+            return '<!doctype html><html><body><h1 id="novo">Atualizado</h1>'
+                '</body></html>';
+          },
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    platform.last.channels[artifactIntentChannel]!.onMessageReceived(
+      const JavaScriptMessage(message: '{"id":8,"prompt":"atualize a página"}'),
+    );
+    await tester.pumpAndSettle();
+    // Wait past the first re-check window: the rewrite shows up on the second.
+    await tester.pump(const Duration(seconds: 5));
+
+    // Loaded twice: the original page, then the agent's rewrite.
+    expect(loads, hasLength(1));
+    expect(asked, greaterThanOrEqualTo(2));
+    expect(platform.last.loadedHtml, hasLength(2));
+    expect(platform.last.loadedHtml.last, contains('id="novo"'));
+    // Still guarded and still bridge-carrying after the reload.
+    expect(platform.last.loadedHtml.last, contains("default-src 'none'"));
+    expect(platform.last.loadedHtml.last, contains('window.hermes='));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('an unchanged artifact is not reloaded', (tester) async {
+    var asked = 0;
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'painel.html',
+          onAgentPrompt: (prompt) async => true,
+          onAgentAnswered: () async {
+            asked++;
+            return null;
+          },
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    platform.last.channels[artifactIntentChannel]!.onMessageReceived(
+      const JavaScriptMessage(message: '{"id":9,"prompt":"oi"}'),
+    );
+    await tester.pumpAndSettle();
+    await tester.pump(const Duration(seconds: 20));
+
+    expect(asked, greaterThan(1));
+    expect(platform.last.loadedHtml, hasLength(1));
+  });
 }

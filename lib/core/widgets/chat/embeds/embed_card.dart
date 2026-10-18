@@ -71,6 +71,14 @@ class EmbedCard extends StatefulWidget {
   /// assumed. Null keeps the document bridge-free.
   final Future<bool> Function(String prompt)? onAgentPrompt;
 
+  /// Fresh markup for this artifact when the host's copy changed since it was
+  /// loaded, else null.
+  ///
+  /// Desktop's loop is: the widget asks, the agent rewrites the file, the
+  /// frame comes back with the new state — the widget updating IS the visible
+  /// response. `ok: true` is only the receipt.
+  final Future<String?> Function()? onAgentAnswered;
+
   final Widget fallback;
   final EmbedConsentStore? consent;
 
@@ -88,6 +96,7 @@ class EmbedCard extends StatefulWidget {
     this.htmlTitle,
     this.onOpenFull,
     this.onAgentPrompt,
+    this.onAgentAnswered,
     this.consent,
     this.launchExternal,
     this.settingsFor = defaultArtifactWebViewSettings,
@@ -120,12 +129,19 @@ class _EmbedCardState extends State<EmbedCard> {
 
   /// Second, delayed height read (late layout), cancelled with the card.
   Timer? _measureTimer;
+
+  /// Watch for the agent's rewrite of this artifact, cancelled with the card.
+  Timer? _artifactWatchTimer;
   int _measureStep = 0;
   int _stableReads = 0;
 
   /// When this card last handed an accepted intent over: the page is throttled
   /// to one per second, like Desktop's frame.
   int _lastIntentAtMs = 0;
+
+  /// Host styling computed at load time, reused when the artifact is reloaded
+  /// after the agent rewrites it.
+  String? _artifactThemeCss;
 
   /// Bumped whenever the card leaves its live state or starts a load, so a
   /// load that was already awaiting something can tell it is stale.
@@ -179,6 +195,8 @@ class _EmbedCardState extends State<EmbedCard> {
     _generation++;
     _measureTimer?.cancel();
     _measureTimer = null;
+    _artifactWatchTimer?.cancel();
+    _artifactWatchTimer = null;
     _consent.removeListener(_onConsentChanged);
     _position?.removeListener(_checkVisibility);
     EmbedLiveRegistry.instance.drop(this);
@@ -213,6 +231,8 @@ class _EmbedCardState extends State<EmbedCard> {
     _generation++;
     _measureTimer?.cancel();
     _measureTimer = null;
+    _artifactWatchTimer?.cancel();
+    _artifactWatchTimer = null;
     EmbedLiveRegistry.instance.drop(this);
     if (!_live && _controller == null) return;
     _controller = null;
@@ -268,6 +288,7 @@ class _EmbedCardState extends State<EmbedCard> {
             fontFamily: DefaultTextStyle.of(context).style.fontFamily,
           )
         : null;
+    _artifactThemeCss = themeCss;
     final controller = WebViewController(
       onPermissionRequest: denyArtifactPermissionRequest,
     );
@@ -473,6 +494,63 @@ class _EmbedCardState extends State<EmbedCard> {
       id,
       delivered ? const {'ok': true} : artifactIntentUndeliveredAck(),
     );
+    if (delivered && controller != null) {
+      _watchArtifactForUpdate(controller, attempt: 0);
+    }
+  }
+
+  /// Delays between checks for the agent's rewrite: the agent does not answer
+  /// instantly, so one look right after the send would almost always miss it.
+  static const List<int> _artifactUpdateDelaysMs = [1200, 2500, 4000, 6000];
+
+  /// The other half of the loop: after the page asked for something, the agent
+  /// may rewrite the artifact. Watch the host's copy and load it when it moves.
+  void _watchArtifactForUpdate(
+    WebViewController controller, {
+    required int attempt,
+  }) {
+    if (widget.onAgentAnswered == null) return;
+    if (attempt >= _artifactUpdateDelaysMs.length) return;
+    _artifactWatchTimer?.cancel();
+    _artifactWatchTimer = Timer(
+      Duration(milliseconds: _artifactUpdateDelaysMs[attempt]),
+      () async {
+        if (!mounted || !identical(_controller, controller)) return;
+        final reloaded = await _reloadIfArtifactChanged(controller);
+        if (!reloaded) {
+          _watchArtifactForUpdate(controller, attempt: attempt + 1);
+        }
+      },
+    );
+  }
+
+  /// Loads the artifact again when the host's copy changed. True when it did.
+  Future<bool> _reloadIfArtifactChanged(WebViewController controller) async {
+    final reload = widget.onAgentAnswered;
+    if (reload == null) return false;
+    final String? fresh;
+    try {
+      fresh = await reload();
+    } catch (_) {
+      return false;
+    }
+    if (fresh == null || fresh.isEmpty) return false;
+    if (!mounted || !identical(_controller, controller)) return false;
+    try {
+      await controller.loadHtmlString(
+        buildGuardedArtifactHtml(
+          fresh,
+          scriptsEnabled: true,
+          themeCss: _artifactThemeCss,
+          intentScript: artifactIntentScript(),
+        ),
+      );
+      _startMeasure(controller);
+      return true;
+    } catch (_) {
+      // The card is gone; the page keeps whatever it had.
+      return false;
+    }
   }
 
   Future<void> _ackArtifactIntent(
