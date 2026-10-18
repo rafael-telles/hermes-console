@@ -8,6 +8,7 @@ import '../../../../l10n/app_localizations.dart';
 import '../../../theme/app_theme.dart';
 import '../../hermes_premium_ui.dart' show showHermesFloatingSurface;
 import '../../artifact_viewer/artifact_html_policy.dart';
+import '../../artifact_viewer/artifact_intent.dart';
 import '../../artifact_viewer/artifact_theme_css.dart';
 import 'embed_consent_store.dart';
 import 'embed_detector.dart';
@@ -64,6 +65,12 @@ class EmbedCard extends StatefulWidget {
   /// [htmlSource] preview whose page is taller than the frame may grow.
   final VoidCallback? onOpenFull;
 
+  /// Hands a prompt the page asked for (`window.hermes.send` or
+  /// `data-hermes-send`) to the agent as a hidden user turn. Returning false
+  /// resolves the page's promise with `undelivered` — the widget is told, not
+  /// assumed. Null keeps the document bridge-free.
+  final Future<bool> Function(String prompt)? onAgentPrompt;
+
   final Widget fallback;
   final EmbedConsentStore? consent;
 
@@ -80,6 +87,7 @@ class EmbedCard extends StatefulWidget {
     this.htmlSource,
     this.htmlTitle,
     this.onOpenFull,
+    this.onAgentPrompt,
     this.consent,
     this.launchExternal,
     this.settingsFor = defaultArtifactWebViewSettings,
@@ -114,6 +122,10 @@ class _EmbedCardState extends State<EmbedCard> {
   Timer? _measureTimer;
   int _measureStep = 0;
   int _stableReads = 0;
+
+  /// When this card last handed an accepted intent over: the page is throttled
+  /// to one per second, like Desktop's frame.
+  int _lastIntentAtMs = 0;
 
   /// Bumped whenever the card leaves its live state or starts a load, so a
   /// load that was already awaiting something can tell it is stale.
@@ -282,6 +294,16 @@ class _EmbedCardState extends State<EmbedCard> {
           unawaited(controller.setJavaScriptMode(JavaScriptMode.disabled));
           return;
         }
+        final onAgentPrompt = widget.onAgentPrompt;
+        if (onAgentPrompt != null) {
+          // The page's one way out: a JSON intent up this channel. Nothing
+          // else is exposed — no app data, no navigation, no files.
+          await controller.addJavaScriptChannel(
+            artifactIntentChannel,
+            onMessageReceived: _onArtifactIntent,
+          );
+          if (!_stillWanted(generation)) return;
+        }
         final html = await htmlSource();
         if (!_stillWanted(generation)) return;
         await controller.loadHtmlString(
@@ -289,6 +311,7 @@ class _EmbedCardState extends State<EmbedCard> {
             html,
             scriptsEnabled: true,
             themeCss: themeCss,
+            intentScript: onAgentPrompt == null ? null : artifactIntentScript(),
           ),
         );
         // The frame follows the page: see [_startMeasure].
@@ -409,6 +432,60 @@ class _EmbedCardState extends State<EmbedCard> {
       }
       _scheduleMeasure(controller);
     });
+  }
+
+  /// A message from the artifact's intent channel: validate it exactly like
+  /// Desktop's frame does, answer the page either way, and only then hand an
+  /// accepted prompt over.
+  void _onArtifactIntent(JavaScriptMessage message) {
+    final now = DateTime.now().millisecondsSinceEpoch;
+    final decision = evaluateArtifactIntent(
+      decodeArtifactIntent(message.message),
+      nowMs: now,
+      lastAcceptedAtMs: _lastIntentAtMs,
+    );
+    final controller = _controller;
+    switch (decision) {
+      case ArtifactIntentReject(:final id, :final ack):
+        unawaited(_ackArtifactIntent(controller, id, ack));
+      case ArtifactIntentAccept(:final id, :final prompt):
+        _lastIntentAtMs = now;
+        unawaited(_deliverArtifactIntent(controller, id, prompt));
+    }
+  }
+
+  Future<void> _deliverArtifactIntent(
+    WebViewController? controller,
+    int? id,
+    String prompt,
+  ) async {
+    final sender = widget.onAgentPrompt;
+    var delivered = false;
+    if (sender != null) {
+      try {
+        delivered = await sender(prompt);
+      } catch (_) {
+        delivered = false;
+      }
+    }
+    await _ackArtifactIntent(
+      controller,
+      id,
+      delivered ? const {'ok': true} : artifactIntentUndeliveredAck(),
+    );
+  }
+
+  Future<void> _ackArtifactIntent(
+    WebViewController? controller,
+    int? id,
+    Map<String, Object?> ack,
+  ) async {
+    if (controller == null) return;
+    try {
+      await controller.runJavaScript(artifactIntentAckScript(id, ack));
+    } catch (_) {
+      // The page is gone; nothing to resolve.
+    }
   }
 
   Future<double?> _readDocumentHeight(WebViewController controller) async {

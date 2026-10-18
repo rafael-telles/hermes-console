@@ -98,6 +98,9 @@ class FakeWebViewController extends PlatformWebViewController {
   /// Every JavaScript bridge the code under test tried to expose.
   final List<String> javaScriptChannels = [];
 
+  /// The same channels by name, so a test can play the page's side.
+  final Map<String, JavaScriptChannelParams> channels = {};
+
   /// Scripts the code under test ran, and what they evaluate to. Defaults to
   /// `0`, which reads as "the document reported no height".
   final List<String> runScripts = [];
@@ -112,7 +115,17 @@ class FakeWebViewController extends PlatformWebViewController {
   @override
   Future<void> addJavaScriptChannel(
     JavaScriptChannelParams javaScriptChannelParams,
-  ) async => javaScriptChannels.add(javaScriptChannelParams.name);
+  ) async {
+    javaScriptChannels.add(javaScriptChannelParams.name);
+    channels[javaScriptChannelParams.name] = javaScriptChannelParams;
+  }
+
+  /// Scripts run without a return value (the app answering a widget, say).
+  final List<String> runJavaScriptCalls = [];
+
+  @override
+  Future<void> runJavaScript(String javaScript) async =>
+      runJavaScriptCalls.add(javaScript);
 
   @override
   Future<void> setOnPlatformPermissionRequest(

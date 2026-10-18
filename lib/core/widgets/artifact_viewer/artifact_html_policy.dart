@@ -123,19 +123,29 @@ final RegExp _leadingDoctype = RegExp(
 /// [themeCss] is optional host styling (see `artifact_theme_css.dart`) placed
 /// after the guard and before the document, so the guest's own rules — same
 /// specificity, later in the cascade — still win over the injected defaults.
+///
+/// [intentScript] is the optional widget-to-agent bridge (see
+/// `artifact_intent.dart`): the ONLY script the app adds to a guest document,
+/// and only where the host supplied a way to deliver the prompts it hands over.
 String buildGuardedArtifactHtml(
   String html, {
   required bool scriptsEnabled,
   String? themeCss,
+  String? intentScript,
 }) {
   final csp = artifactContentSecurityPolicy(scriptsEnabled: scriptsEnabled);
   final theme = themeCss == null || themeCss.trim().isEmpty
       ? ''
       : '<style id="hermes-artifact-theme">$themeCss</style>';
+  final intent =
+      !scriptsEnabled || intentScript == null || intentScript.trim().isEmpty
+      ? ''
+      : intentScript;
   final guard =
       '<meta http-equiv="Content-Security-Policy" content="$csp">'
       '${scriptsEnabled ? _windowOpenLock : ''}'
-      '$theme';
+      '$theme'
+      '$intent';
   final doctype = _leadingDoctype.firstMatch(html);
   if (doctype == null) return '$guard$html';
   return '${doctype.group(0)}$guard${html.substring(doctype.end)}';

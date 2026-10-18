@@ -3,6 +3,7 @@ import 'dart:io';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/theme/app_theme.dart';
+import 'package:hermes_android/core/widgets/artifact_viewer/artifact_intent.dart';
 import 'package:hermes_android/core/widgets/chat/embeds/embed_card.dart';
 import 'package:hermes_android/core/widgets/chat/embeds/embed_consent_store.dart';
 import 'package:hermes_android/core/widgets/chat/embeds/embed_detector.dart';
@@ -226,5 +227,163 @@ void main() {
         .onPressed!();
     expect(opened, 1);
     expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('an artifact preview gets the intent bridge and nothing else', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'painel.html',
+          onAgentPrompt: (prompt) async => true,
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(platform.last.javaScriptChannels, [artifactIntentChannel]);
+    final html = platform.last.loadedHtml.single;
+    expect(html, contains('window.hermes='));
+    expect(html, contains('data-hermes-send'));
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('a prompt from the page reaches the agent and is acked', (
+    tester,
+  ) async {
+    final delivered = <String>[];
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'painel.html',
+          onAgentPrompt: (prompt) async {
+            delivered.add(prompt);
+            return true;
+          },
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    platform.last.channels[artifactIntentChannel]!.onMessageReceived(
+      const JavaScriptMessage(message: '{"id":4,"prompt":" get-price eth "}'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(delivered, ['get-price eth']);
+    expect(
+      platform.last.runJavaScriptCalls.single,
+      contains('window.__hermesAck&&window.__hermesAck(4,{"ok":true})'),
+    );
+    expect(tester.takeException(), isNull);
+  });
+
+  testWidgets('an undelivered prompt tells the widget instead of assuming', (
+    tester,
+  ) async {
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'painel.html',
+          onAgentPrompt: (prompt) async => false,
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    platform.last.channels[artifactIntentChannel]!.onMessageReceived(
+      const JavaScriptMessage(message: '{"id":5,"prompt":"oi"}'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(
+      platform.last.runJavaScriptCalls.single,
+      contains('"error":"undelivered"'),
+    );
+  });
+
+  testWidgets('a page is throttled to one accepted prompt per second', (
+    tester,
+  ) async {
+    final delivered = <String>[];
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'painel.html',
+          onAgentPrompt: (prompt) async {
+            delivered.add(prompt);
+            return true;
+          },
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    final channel = platform.last.channels[artifactIntentChannel]!;
+    channel.onMessageReceived(
+      const JavaScriptMessage(message: '{"id":1,"prompt":"primeiro"}'),
+    );
+    channel.onMessageReceived(
+      const JavaScriptMessage(message: '{"id":2,"prompt":"segundo"}'),
+    );
+    await tester.pumpAndSettle();
+
+    expect(delivered, ['primeiro']);
+    // The refusal is answered immediately, the acceptance after the sender
+    // resolves: order is not part of the contract, both acks are.
+    expect(
+      platform.last.runJavaScriptCalls.where((c) => c.contains('{"ok":true}')),
+      hasLength(1),
+    );
+    expect(
+      platform.last.runJavaScriptCalls.where(
+        (c) => c.contains('"error":"throttled"'),
+      ),
+      hasLength(1),
+    );
+  });
+
+  testWidgets('an over-length prompt is refused, never truncated', (
+    tester,
+  ) async {
+    final delivered = <String>[];
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'painel.html',
+          onAgentPrompt: (prompt) async {
+            delivered.add(prompt);
+            return true;
+          },
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    platform.last.channels[artifactIntentChannel]!.onMessageReceived(
+      JavaScriptMessage(
+        message: '{"id":3,"prompt":"${'p' * (maxArtifactIntentLength + 1)}"}',
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    expect(delivered, isEmpty);
+    expect(platform.last.runJavaScriptCalls.single, contains('"too_long"'));
   });
 }
