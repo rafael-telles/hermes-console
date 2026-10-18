@@ -1597,7 +1597,7 @@ class _SessionListScreenState extends State<SessionListScreen>
       });
       _showArchiveResult(archived, localOnly: false);
     } on DashboardHttpException catch (error) {
-      final unsupported = error.statusCode == 404 || error.statusCode == 405;
+      final unsupported = dashboardRefusesSidebarWrite(error);
       if (unsupported && (archived || !session.archived)) {
         await _setLocalArchived(session, archived);
         if (!mounted) return;

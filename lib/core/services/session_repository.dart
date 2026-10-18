@@ -854,6 +854,22 @@ Future<Map<String, Object?>> patchDashboardSessionState(
 int? dashboardHttpStatusOf(Object error) =>
     error is DashboardHttpException ? error.statusCode : null;
 
+/// Whether the Dashboard will never own this sidebar write, so the change has
+/// to stay a preference of this device.
+///
+/// Two verdicts qualify: an older runtime with no route at all (404/405) and a
+/// refusal by ownership — the session is bound to another login, so the store
+/// answers `403 permission_denied` for every write from this account
+/// (`authorize_history` in the Hermes store). Both used to surface as
+/// "the previous state was restored", blaming the network for a write the
+/// server had already decided never to accept.
+bool dashboardRefusesSidebarWrite(Object error) {
+  if (error is! DashboardHttpException) return false;
+  if (error.statusCode == 404 || error.statusCode == 405) return true;
+  return error.statusCode == 403 &&
+      error.body.toLowerCase().contains('permission_denied');
+}
+
 /// A [SessionStateWriter] for surfaces with no repository of their own
 /// (Home): each write opens and closes its own Dashboard client, so it
 /// outlives no screen.
