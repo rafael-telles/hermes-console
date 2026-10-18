@@ -481,6 +481,17 @@ abstract class HermesDesktopClientSurfacePromptGateway {
   );
 }
 
+/// Submits a prompt the client must NOT render as a user bubble
+/// (`display_kind: 'hidden'`), exactly like Desktop's own composer does for
+/// widget intents. Optional capability: it rides the same `prompt.submit`, and
+/// `hidden` is the only kind the host lets a client author.
+abstract class HermesDesktopHiddenPromptGateway {
+  /// Hands [text] to the agent as a hidden user turn: it wakes the agent and
+  /// persists, but no client renders it. Silent by design — there is no row to
+  /// reconcile and nothing to echo.
+  Future<void> submitHiddenPrompt(String runtimeSessionId, String text);
+}
+
 /// Lifecycle moderno y explícito de sesión.
 ///
 /// Se mantiene fuera de [HermesDesktopGateway] para no romper gateways/fakes
@@ -1485,6 +1496,7 @@ class TuiGatewayClient
         HermesDesktopRedirectGateway,
         HermesDesktopInterruptedPromptGateway,
         HermesDesktopClientSurfacePromptGateway,
+        HermesDesktopHiddenPromptGateway,
         HermesDesktopSessionLifecycleGateway,
         HermesDesktopSessionHistoryGateway,
         HermesDesktopSessionCloseGateway,
@@ -6785,9 +6797,7 @@ class TuiGatewayClient
       runtimeSessionId: runtimeId,
       storedSessionId: storedId,
       title: title is String ? title : '',
-      messageCount: messageCount is int && messageCount >= 0
-          ? messageCount
-          : 0,
+      messageCount: messageCount is int && messageCount >= 0 ? messageCount : 0,
     );
   }
 
@@ -7171,8 +7181,9 @@ class TuiGatewayClient
         DesktopGatewayCapabilityState.unknown) {
       return Future.value(messageReactionsAvailable);
     }
-    return _reactionProbe ??= _probeMessageReactions(runtimeSessionId)
-        .whenComplete(() => _reactionProbe = null);
+    return _reactionProbe ??= _probeMessageReactions(
+      runtimeSessionId,
+    ).whenComplete(() => _reactionProbe = null);
   }
 
   Future<bool> _probeMessageReactions(String runtimeSessionId) async {
@@ -7732,6 +7743,17 @@ class TuiGatewayClient
   @override
   Future<void> submitQueuedPrompt(String runtimeSessionId, String text) =>
       _submitQueued(runtimeSessionId, text, const {});
+
+  @override
+  Future<void> submitHiddenPrompt(String runtimeSessionId, String text) async {
+    await _requestPromptSubmit(
+      mergePromptSubmitParams(
+        {'session_id': runtimeSessionId, 'text': text},
+        const {'display_kind': 'hidden'},
+      ),
+    );
+    _markWatchdogRuntimeBusy(runtimeSessionId);
+  }
 
   @override
   Future<void> submitQueuedPromptWithSurface(

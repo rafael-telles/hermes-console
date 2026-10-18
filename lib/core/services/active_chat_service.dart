@@ -4710,6 +4710,29 @@ class ActiveChat {
     if (!_disposed) _emit(ActiveChatEvent.reactionsChanged);
   }
 
+  /// Hands a widget's prompt to the agent as a hidden user turn.
+  ///
+  /// The Console half of the artifact bridge: a page's `window.hermes.send`
+  /// reaches here through the WebView's intent channel, and the turn must not
+  /// take space in the transcript — Desktop types that same send
+  /// `display_kind: 'hidden'`. False means no runtime session or no
+  /// capability, so the page is answered `undelivered` instead of "saved".
+  Future<bool> sendArtifactIntent(String prompt) async {
+    final text = prompt.trim();
+    if (text.isEmpty || _disposed) return false;
+    final runtimeId = _desktopRuntimeSessionId;
+    final gateway = _desktopGateway as Object?;
+    if (runtimeId == null || gateway is! HermesDesktopHiddenPromptGateway) {
+      return false;
+    }
+    try {
+      await gateway.submitHiddenPrompt(runtimeId, text);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
   /// Sets, replaces or retracts the user's reaction. A persisted row (with
   /// [rowId]) shows it at once and rolls back if the gateway refuses; a live
   /// row that has no id yet names [newestRole] and shows the server's answer.

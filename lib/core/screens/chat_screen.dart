@@ -5917,6 +5917,11 @@ class _ChatScreenState extends State<ChatScreen>
     }
   }
 
+  /// Hands a widget's prompt to the agent as a hidden user turn: the page
+  /// asked through `window.hermes.send` and this is the Console's delivery.
+  Future<bool> sendArtifactIntent(String prompt) =>
+      _chat.sendArtifactIntent(prompt);
+
   /// Same scope the generated-media disk cache is keyed by.
   String get generatedMediaCacheScope =>
       '${widget.connection.id}\u0000$_effectiveSessionProfile';
@@ -24377,6 +24382,9 @@ class _GeneratedMediaSlotState extends State<_GeneratedMediaSlot> {
               onShare,
               onSave,
             ),
+            // The page's one voice: its prompt becomes a hidden user turn, so
+            // it reaches the agent without taking a bubble (Desktop's rule).
+            onAgentPrompt: state.sendArtifactIntent,
             fallback: GeneratedFileCard(
               name: widget.reference.displayName,
               mimeType: widget.reference.mimeType,
