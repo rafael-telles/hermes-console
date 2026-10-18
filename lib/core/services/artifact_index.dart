@@ -280,10 +280,12 @@ DesktopSessionMessage _artifactMessageProjection(
 ) {
   final isTool = message.role == DesktopSessionMessageRole.tool;
   final rawContent = message.content;
-  // A text tool result keeps only its canonical `MEDIA:` lines; prose, paths
-  // in prose and serialized JSON are never retained or scanned.
-  final content = isTool && rawContent is String
-      ? _toolMediaText(rawContent)
+  // A text message keeps only the canonical directives it announces: a tool
+  // result its `MEDIA:` lines, any other message the `MEDIA:`/`::preview`
+  // lines the chat renders as file cards. Prose, paths in prose and serialized
+  // JSON are never retained or scanned.
+  final content = rawContent is String
+      ? (isTool ? _toolMediaText(rawContent) : _directiveMediaText(rawContent))
       : _sanitizeArtifactValue(rawContent, isTool: isTool);
   final context = isTool
       ? _sanitizeArtifactValue(message.context, isTool: true)
@@ -316,6 +318,15 @@ String? _toolMediaText(String content) {
   return references.map((reference) => 'MEDIA:${reference.source}').join('\n');
 }
 
+/// Canonical directives of a message that is not a tool result — the
+/// `MEDIA:`/`::preview{file="…"}` lines the chat renders as file cards. Same
+/// narrowing as [_toolMediaText]: only the validated reference survives.
+String? _directiveMediaText(String content) {
+  final references = GeneratedMediaService.referencesFromText(content);
+  if (references.isEmpty) return null;
+  return references.map((reference) => 'MEDIA:${reference.source}').join('\n');
+}
+
 /// Files a text tool result announced with `MEDIA:`. The server path was
 /// validated by [GeneratedMediaService] (absolute, no traversal, no sensitive
 /// names) — the same contract the chat uses to download it.
@@ -327,6 +338,38 @@ List<_ArtifactSeed> _toolMediaSeeds(DesktopSessionMessage message) {
   return [
     for (final reference in GeneratedMediaService.referencesFromToolText(
       content,
+    ))
+      if (reference.sourceKind == GeneratedMediaSourceKind.serverPath)
+        _ArtifactSeed(
+          serverId: null,
+          kind: reference.kind == GeneratedMediaKind.image
+              ? SessionArtifactKind.image
+              : SessionArtifactKind.generated,
+          displayName: reference.displayName,
+          hasExplicitDisplayName: true,
+          mimeType: _mimeType(reference.mimeType),
+          sizeBytes: null,
+          managedReference: reference.source,
+          remote: true,
+          availability: SessionArtifactAvailability.unknown,
+          createdAt: null,
+        ),
+  ];
+}
+
+/// Files a message announced with `MEDIA:` or a `::preview{file="…"}` directive.
+///
+/// The chat renders those directives from any message, not only from tool
+/// results, so a reply that points at a generated file has to reach the
+/// artifacts sheet too — otherwise the file is openable in the transcript and
+/// missing from the list. Only the directive is read: the reference it carries
+/// (path, name, MIME) is the same one the chat downloads, and the prose around
+/// it is never retained.
+List<_ArtifactSeed> _messageDirectiveSeeds(DesktopSessionMessage message) {
+  if (message.role == DesktopSessionMessageRole.tool) return const [];
+  return [
+    for (final reference in GeneratedMediaService.referencesFromText(
+      message.content,
     ))
       if (reference.sourceKind == GeneratedMediaSourceKind.serverPath)
         _ArtifactSeed(
@@ -722,6 +765,7 @@ List<_ArtifactSeed> _extractMessage(
 
   collectStructuredRoot(message.content);
   seeds.addAll(_toolMediaSeeds(message));
+  seeds.addAll(_messageDirectiveSeeds(message));
   if (message.role == DesktopSessionMessageRole.tool) {
     collectStructuredRoot(message.context);
   }

@@ -226,7 +226,7 @@ void main() {
     expect(snapshot.buildStats.candidateCount, 0);
   });
 
-  test('indexa MEDIA de un tool result de texto sin la prosa', () {
+  test('indexa MEDIA de un tool result y de la respuesta, sin la prosa', () {
     final tool = _message({
       'role': 'tool',
       'message_id': 'tool-media-1',
@@ -236,9 +236,12 @@ void main() {
           'MEDIA:/home/hermes/work/informe.pdf\n'
           'MEDIA:/home/hermes/.ssh/id_ed25519',
     });
-    final assistantProse = _message({
+    // La respuesta anuncia el archivo con la misma directiva que el chat pinta
+    // como tarjeta: la lista de artefactos tiene que verlo también.
+    final assistantReply = _message({
       'role': 'assistant',
-      'content': 'MEDIA:/home/hermes/work/eco.png',
+      'message_id': 'assistant-media-1',
+      'content': 'Hecho.\nMEDIA:/home/hermes/work/eco.png',
     });
 
     final snapshot = ArtifactIndex.resolve(
@@ -246,19 +249,53 @@ void main() {
       transcriptRevision: 1,
       transcript: [
         _entry(tool, ordinal: 0, id: 'tool-media-1'),
-        _entry(assistantProse, ordinal: 1),
+        _entry(assistantReply, ordinal: 1, id: 'assistant-media-1'),
       ],
+      policy: _policy(),
+    );
+
+    expect(snapshot.artifacts, hasLength(2));
+    final report = snapshot.artifacts.firstWhere(
+      (artifact) => artifact.displayName == 'informe.pdf',
+    );
+    expect(report.kind, SessionArtifactKind.generated);
+    expect(report.mimeType, 'application/pdf');
+    expect(report.managedReference, '/home/hermes/work/informe.pdf');
+    expect(report.primarySource.messageId, 'tool-media-1');
+
+    final image = snapshot.artifacts.firstWhere(
+      (artifact) => artifact.displayName == 'eco.png',
+    );
+    expect(image.kind, SessionArtifactKind.image);
+    expect(image.managedReference, '/home/hermes/work/eco.png');
+    expect(image.primarySource.messageId, 'assistant-media-1');
+    expect(snapshot.toString(), isNot(contains('Informe listo')));
+    expect(snapshot.toString(), isNot(contains('Hecho.')));
+  });
+
+  test('indexa ::preview de una respuesta y no la prosa alrededor', () {
+    final reply = _message({
+      'role': 'assistant',
+      'message_id': 'assistant-preview-1',
+      'content':
+          'Artefato listo.\n'
+          '::preview{file="/home/hermes/work/painel.html"}\n'
+          'Está en /home/hermes/work/painel.html, con barras locales.',
+    });
+
+    final snapshot = ArtifactIndex.resolve(
+      scope: _scope(),
+      transcriptRevision: 1,
+      transcript: [_entry(reply, ordinal: 0, id: 'assistant-preview-1')],
       policy: _policy(),
     );
 
     expect(snapshot.artifacts, hasLength(1));
     final artifact = snapshot.artifacts.single;
-    expect(artifact.displayName, 'informe.pdf');
+    expect(artifact.displayName, 'painel.html');
+    expect(artifact.managedReference, '/home/hermes/work/painel.html');
     expect(artifact.kind, SessionArtifactKind.generated);
-    expect(artifact.mimeType, 'application/pdf');
-    expect(artifact.managedReference, '/home/hermes/work/informe.pdf');
-    expect(artifact.primarySource.messageId, 'tool-media-1');
-    expect(snapshot.toString(), isNot(contains('Informe listo')));
+    expect(snapshot.toString(), isNot(contains('Artefato listo')));
   });
 
   test('acepta solo tool results estructurados con tipo explícito', () {
