@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:flutter_test/flutter_test.dart';
 import 'package:hermes_android/core/models/session_artifact.dart';
@@ -125,4 +126,82 @@ void main() {
       );
     },
   );
+
+  test('materialize escribe una copia privada con nombre estable', () async {
+    final directory = await Directory.systemTemp.createTemp('artifact-viewer-');
+    addTearDown(() => directory.delete(recursive: true));
+    var requests = 0;
+    // The service closes the client it borrowed, so each download needs a new
+    // one — same contract as production, where the factory builds it lazily.
+    DashboardClient fetch() => DashboardClient(
+      host: 'gateway.private',
+      port: 9119,
+      useHttps: true,
+      manualToken: 'session-token',
+      httpClientOverride: MockClient((request) async {
+        requests += 1;
+        return http.Response.bytes(
+          utf8.encode('<main>panel</main>'),
+          200,
+          headers: {'content-type': 'text/html'},
+        );
+      }),
+    );
+    final service = SessionArtifactDownloadService(
+      connection: _connection(),
+      dashboardFactory: (_) => fetch(),
+      viewerDirectory: () async => directory,
+    );
+
+    final copy = await service.materialize(
+      _artifact('/home/hermes/report.pdf'),
+    );
+
+    expect(copy.file.parent.path, directory.path);
+    expect(copy.fileName, 'report.pdf');
+    expect(copy.mimeType, 'text/html');
+    expect(copy.sizeBytes, 18);
+    expect(await copy.file.readAsString(), '<main>panel</main>');
+    expect(directory.listSync().map((entry) => entry.path.split('/').last), [
+      copy.file.path.split('/').last,
+    ]);
+
+    // Reopening the same artifact reuses the copy: one write, one file.
+    final again = await service.materialize(
+      _artifact('/home/hermes/report.pdf'),
+    );
+    expect(again.file.path, copy.file.path);
+    expect(directory.listSync(), hasLength(1));
+    expect(requests, 2);
+  });
+
+  test('materialize no deja copia cuando el servidor rechaza', () async {
+    final directory = await Directory.systemTemp.createTemp('artifact-viewer-');
+    addTearDown(() => directory.delete(recursive: true));
+    final service = SessionArtifactDownloadService(
+      connection: _connection(),
+      dashboardFactory: (_) => DashboardClient(
+        host: 'gateway.private',
+        port: 9119,
+        useHttps: true,
+        manualToken: 'session-token',
+        httpClientOverride: MockClient(
+          (_) async => http.Response('denied', 403),
+        ),
+      ),
+      viewerDirectory: () async => directory,
+    );
+
+    await expectLater(
+      service.materialize(_artifact('/home/hermes/secret.pdf')),
+      throwsA(
+        isA<SessionArtifactDownloadException>().having(
+          (error) => error.failure,
+          'failure',
+          SessionArtifactDownloadFailure.accessDenied,
+        ),
+      ),
+    );
+    expect(directory.listSync(), isEmpty);
+  });
 }

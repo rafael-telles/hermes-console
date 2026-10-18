@@ -4080,6 +4080,14 @@
       }
     }
   },
+  "artifactOpenSemantics": "{name}. Abrir artefacto",
+  "@artifactOpenSemantics": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "artifactSourceOne": "Origen: mensaje {number}",
   "@artifactSourceOne": {
     "placeholders": {

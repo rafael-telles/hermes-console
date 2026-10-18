@@ -14064,6 +14064,15 @@ class _ChatScreenState extends State<ChatScreen>
         },
         canDownloadArtifact: downloads.canDownload,
         onDownloadArtifact: _downloadSessionArtifact,
+        onOpenArtifact: (artifact) async {
+          final copy = await _materializeSessionArtifact(artifact);
+          if (copy == null) return;
+          if (dialogContext.mounted) Navigator.of(dialogContext).pop();
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            unawaited(_openSessionArtifactViewer(artifact, copy));
+          });
+        },
         onJumpToSource: (source) {
           Navigator.of(dialogContext).pop();
           WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -14142,6 +14151,86 @@ class _ChatScreenState extends State<ChatScreen>
       }
     }
   }
+
+  /// Fetches an artifact's bytes into the app-private cache the transcript
+  /// cards already use. Returns null after showing why when the server cannot
+  /// serve them.
+  Future<SessionArtifactViewerCopy?> _materializeSessionArtifact(
+    SessionArtifact artifact,
+  ) async {
+    final strings = Strings.of(context);
+    try {
+      final reference = GeneratedMediaService.referenceFromSource(
+        artifact.managedReference ?? '',
+      );
+      if (reference != null) {
+        // Same route, cache scope and size caps as the card in the transcript:
+        // an image already painted there opens without a second download.
+        final file = await downloadUserServerAttachment(reference);
+        return SessionArtifactViewerCopy(
+          file: file,
+          fileName: artifact.displayName,
+          mimeType: reference.mimeType,
+          sizeBytes: await file.length(),
+        );
+      }
+      // A managed reference that is not a plain server path (a Dashboard
+      // `files/download` URL) goes through the session downloader instead.
+      return await SessionArtifactDownloadService(
+        connection: widget.connection,
+      ).materialize(artifact);
+    } on SessionArtifactDownloadException catch (error) {
+      if (mounted) {
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(
+            content: Text(
+              sessionArtifactDownloadMessage(strings, error.failure),
+            ),
+          ),
+        );
+      }
+    } on ArtifactExportTooLarge {
+      if (mounted) {
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(content: Text(strings.artifactDownloadTooLarge)),
+          kind: HermesNoticeKind.warning,
+        );
+      }
+    } on Object {
+      if (mounted) {
+        HermesNotice.of(context).showSnackBar(
+          SnackBar(content: Text(strings.artifactDownloadFailed)),
+          kind: HermesNoticeKind.error,
+        );
+      }
+    }
+    return null;
+  }
+
+  /// Full-screen viewer for an artifact of this session: HTML/SVG render in the
+  /// locked WebView, images zoom, text/Markdown render natively. Opening it
+  /// never puts the file anywhere the user owns — saving stays the download
+  /// action.
+  Future<void> _openSessionArtifactViewer(
+    SessionArtifact artifact,
+    SessionArtifactViewerCopy copy,
+  ) => openArtifactViewer(
+    context,
+    name: copy.fileName,
+    mimeType: copy.mimeType,
+    file: copy.file,
+    sizeBytes: copy.sizeBytes,
+    onOpenExternal: () => unawaited(
+      openGeneratedMediaExternally(
+        copy.file,
+        mimeType: copy.mimeType,
+        expectedSize: copy.sizeBytes,
+      ).catchError((Object _) {}),
+    ),
+    onShare: () =>
+        unawaited(shareMediaFile(copy.file).catchError((Object _) {})),
+    onSave: () => unawaited(_downloadSessionArtifact(artifact)),
+  );
 
   Future<void> _jumpToArtifactSource(SessionArtifactSource source) async {
     final sourceIndex = messageIndexForArtifactSource(_messages, source);

@@ -34593,6 +34593,65 @@ void main() {
         expect(tester.takeException(), isNull);
       },
     );
+
+    testWidgets('tocar un artefacto de la lista lo abre en el visor', (
+      tester,
+    ) async {
+      mockSupportDir();
+      const artifactPath = '/home/hermes/.hermes/out/informe.md';
+      final chat = await pumpChat(
+        tester,
+        connection: _remoteConn('conn-artifact-open'),
+        messagesLoaded: false,
+        initialStoredSessionId: 'sess-test',
+        attachDesktopRuntimeOnLoad: false,
+        allowUnownedDesktopSnapshotForTesting: false,
+        storedMessageLoader: (_, _) async => [
+          const {
+            'id': 'artifact-ask',
+            'message_id': 'artifact-ask',
+            'role': 'user',
+            'content': 'gera o informe',
+          },
+          {
+            'id': 'artifact-reply',
+            'message_id': 'artifact-reply',
+            'role': 'assistant',
+            'content': 'Listo:\n\nMEDIA:$artifactPath\n',
+          },
+        ],
+        userServerMediaFetcher: (path, destination) async {
+          await destination.writeAsString(
+            '# informe\n\ncontenido del artefacto',
+          );
+        },
+      );
+      await settleIo(tester);
+      expect(chat.hasEarlierMessages, isFalse);
+
+      await tester.tap(find.byKey(const ValueKey('chat-notch')));
+      await tester.pump();
+      await tester.pump(kChatNotchSheetOpen);
+      await _tapSheetRow(tester, find.text('Artefactos'));
+      await tester.pump();
+      await tester.pump(const Duration(milliseconds: 240));
+
+      final dialog = find.byKey(const ValueKey('chat-artifacts-dialog'));
+      expect(dialog, findsOneWidget);
+      final row = find.descendant(
+        of: dialog,
+        matching: find.text('informe.md'),
+      );
+      expect(row, findsOneWidget);
+
+      await tester.tap(row);
+      await settleIo(tester);
+      await tester.pumpAndSettle();
+
+      expect(find.byType(ArtifactViewerScreen), findsOneWidget);
+      expect(find.textContaining('contenido del artefacto'), findsOneWidget);
+      expect(tester.takeException(), isNull);
+    });
   });
 
   testWidgets(

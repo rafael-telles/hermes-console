@@ -15,6 +15,7 @@ class SessionArtifactsSheet extends StatelessWidget {
   final ValueChanged<String>? onOpenGeneratedArtifact;
   final bool Function(SessionArtifact artifact)? canDownloadArtifact;
   final Future<void> Function(SessionArtifact artifact)? onDownloadArtifact;
+  final Future<void> Function(SessionArtifact artifact)? onOpenArtifact;
   final ValueChanged<SessionArtifactSource>? onJumpToSource;
   final bool showDragHandle;
 
@@ -25,6 +26,7 @@ class SessionArtifactsSheet extends StatelessWidget {
     this.onOpenGeneratedArtifact,
     this.canDownloadArtifact,
     this.onDownloadArtifact,
+    this.onOpenArtifact,
     this.onJumpToSource,
     this.showDragHandle = true,
     super.key,
@@ -145,6 +147,7 @@ class SessionArtifactsSheet extends StatelessWidget {
                             artifact: artifact,
                             canDownload: canDownloadArtifact,
                             onDownload: onDownloadArtifact,
+                            onOpen: onOpenArtifact,
                             onJumpToSource: onJumpToSource,
                             strings: strings,
                           ),
@@ -445,10 +448,11 @@ class _EmptyArtifactsState extends StatelessWidget {
   }
 }
 
-class _ArtifactRow extends StatelessWidget {
+class _ArtifactRow extends StatefulWidget {
   final SessionArtifact artifact;
   final bool Function(SessionArtifact artifact)? canDownload;
   final Future<void> Function(SessionArtifact artifact)? onDownload;
+  final Future<void> Function(SessionArtifact artifact)? onOpen;
   final ValueChanged<SessionArtifactSource>? onJumpToSource;
   final Strings strings;
 
@@ -457,28 +461,61 @@ class _ArtifactRow extends StatelessWidget {
     required this.strings,
     this.canDownload,
     this.onDownload,
+    this.onOpen,
     this.onJumpToSource,
   });
 
   @override
+  State<_ArtifactRow> createState() => _ArtifactRowState();
+}
+
+class _ArtifactRowState extends State<_ArtifactRow> {
+  bool _opening = false;
+
+  Future<void> _open() async {
+    final onOpen = widget.onOpen;
+    if (_opening || onOpen == null) return;
+    setState(() => _opening = true);
+    try {
+      await onOpen(widget.artifact);
+    } finally {
+      // The sheet is usually gone by the time the bytes arrive: the spinner
+      // stops before the viewer opens, never under it.
+      if (mounted) setState(() => _opening = false);
+    }
+  }
+
+  @override
   Widget build(BuildContext context) {
+    final artifact = widget.artifact;
+    final strings = widget.strings;
     final colors = Theme.of(context).hermes;
     final source = artifact.sources.isEmpty ? null : artifact.primarySource;
-    final canJump = source != null && onJumpToSource != null;
-    final canSave =
-        onDownload != null && (canDownload?.call(artifact) ?? false);
+    final canJump = source != null && widget.onJumpToSource != null;
+    // The viewer needs the artifact's bytes, so the same predicate that gates
+    // the download gates opening: without a reachable reference the row keeps
+    // its old behaviour (jump to the message that announced it).
+    final reachable = widget.canDownload?.call(artifact) ?? false;
+    final canOpen = widget.onOpen != null && reachable;
+    final canSave = widget.onDownload != null && reachable;
     final availabilityColor = _availabilityColor(colors, artifact.availability);
 
     return Semantics(
-      button: canJump,
-      label: canJump
+      button: canOpen || canJump,
+      label: canOpen
+          ? strings.artifactOpenSemantics(artifact.displayName)
+          : canJump
           ? strings.artifactJumpSemantics(artifact.displayName)
           : artifact.displayName,
       child: Material(
         color: Colors.transparent,
         child: InkWell(
           key: ValueKey('session-artifact-${artifact.id}'),
-          onTap: canJump ? () => onJumpToSource!(source) : null,
+          onTap: canOpen
+              ? _open
+              : canJump
+              ? () => widget.onJumpToSource!(source)
+              : null,
           child: Padding(
             padding: const EdgeInsets.fromLTRB(13, 12, 11, 12),
             child: Row(
@@ -541,22 +578,44 @@ class _ArtifactRow extends StatelessWidget {
                 if (canSave)
                   _ArtifactDownloadButton(
                     artifact: artifact,
-                    onDownload: onDownload!,
+                    onDownload: widget.onDownload!,
                   ),
                 if (canJump) ...[
-                  const SizedBox(width: 8),
-                  Tooltip(
-                    message: strings.artifactJumpSource,
-                    child: Padding(
-                      padding: const EdgeInsets.only(top: 5),
-                      child: Icon(
-                        Icons.arrow_upward_rounded,
-                        size: 19,
-                        color: colors.accent,
-                      ),
+                  const SizedBox(width: 4),
+                  IconButton(
+                    key: ValueKey('artifact-jump-${artifact.id}'),
+                    tooltip: strings.artifactJumpSource,
+                    onPressed: () => widget.onJumpToSource!(source),
+                    visualDensity: VisualDensity.compact,
+                    icon: Icon(
+                      Icons.arrow_upward_rounded,
+                      size: 19,
+                      color: colors.accent,
                     ),
                   ),
                 ],
+                if (_opening)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 8, right: 2, left: 2),
+                    child: SizedBox.square(
+                      dimension: 17,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: colors.accent,
+                      ),
+                    ),
+                  )
+                else if (canOpen)
+                  Padding(
+                    padding: const EdgeInsets.only(top: 6),
+                    child: Tooltip(
+                      message: strings.commonOpen,
+                      child: Icon(
+                        Icons.chevron_right_rounded,
+                        color: colors.textDisabled,
+                      ),
+                    ),
+                  ),
               ],
             ),
           ),

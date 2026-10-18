@@ -1,4 +1,7 @@
+import 'dart:io';
 import 'dart:typed_data';
+
+import 'package:path_provider/path_provider.dart';
 
 import '../models/session_artifact.dart';
 import 'artifact_export_service.dart';
@@ -35,6 +38,25 @@ final class SessionArtifactDownload {
   });
 }
 
+/// Bytes of an artifact in a private copy the in-app viewer renders from.
+///
+/// [_file] lives in the app's scratch storage: nothing here is published, and
+/// [SessionArtifactDownloadService.downloadAndSave] stays the only route that
+/// puts an artifact in the user's own storage.
+final class SessionArtifactViewerCopy {
+  final File file;
+  final String fileName;
+  final String mimeType;
+  final int sizeBytes;
+
+  const SessionArtifactViewerCopy({
+    required this.file,
+    required this.fileName,
+    required this.mimeType,
+    required this.sizeBytes,
+  });
+}
+
 typedef SessionArtifactDashboardFactory =
     DashboardClient Function(SavedConnection connection);
 
@@ -46,11 +68,19 @@ final class SessionArtifactDownloadService {
 
   final SavedConnection connection;
   final SessionArtifactDashboardFactory _dashboardFactory;
+  final Future<Directory> Function() _viewerDirectory;
 
   SessionArtifactDownloadService({
     required this.connection,
     SessionArtifactDashboardFactory? dashboardFactory,
-  }) : _dashboardFactory = dashboardFactory ?? DashboardClient.lazy;
+    Future<Directory> Function()? viewerDirectory,
+  }) : _dashboardFactory = dashboardFactory ?? DashboardClient.lazy,
+       _viewerDirectory = viewerDirectory ?? defaultViewerDirectory;
+
+  /// Scratch directory for viewer copies. App-private by construction (the app
+  /// cache the OS may reclaim), never the user's Downloads.
+  static Future<Directory> defaultViewerDirectory() async =>
+      Directory('${(await getTemporaryDirectory()).path}/console-artifacts');
 
   bool canDownload(SessionArtifact artifact) {
     if (artifact.availability == SessionArtifactAvailability.missing ||
@@ -133,6 +163,44 @@ final class SessionArtifactDownloadService {
     final result = await download(artifact);
     return exporter.saveBytes(fileName: result.fileName, bytes: result.bytes);
   }
+
+  /// [artifact]'s bytes in a private copy the in-app viewer reads.
+  ///
+  /// Same validation and typed failures as [download]. The copy is named from
+  /// the artifact id, so reopening the same artifact reuses one file instead of
+  /// piling scratch up, and it never reaches the share sheet.
+  Future<SessionArtifactViewerCopy> materialize(
+    SessionArtifact artifact,
+  ) async {
+    final result = await download(artifact);
+    final directory = await _viewerDirectory();
+    await directory.create(recursive: true);
+    final file = File('${directory.path}/${_viewerCopyName(artifact)}');
+    if (!file.existsSync() || file.lengthSync() != result.bytes.length) {
+      await file.writeAsBytes(result.bytes, flush: true);
+    }
+    return SessionArtifactViewerCopy(
+      file: file,
+      fileName: result.fileName,
+      mimeType: result.mimeType,
+      sizeBytes: result.bytes.length,
+    );
+  }
+
+  static String _viewerCopyName(SessionArtifact artifact) {
+    final safeId = _truncate(
+      artifact.id.replaceAll(RegExp(r'[^A-Za-z0-9._-]'), '_'),
+      64,
+    );
+    final safeName = _truncate(
+      PlatformArtifactExportActions.sanitizeFileName(artifact.displayName),
+      96,
+    );
+    return '${safeId.isEmpty ? 'artifact' : safeId}-$safeName';
+  }
+
+  static String _truncate(String value, int maxLength) =>
+      value.length <= maxLength ? value : value.substring(0, maxLength);
 
   String? _downloadEndpoint(String? rawReference) {
     final reference = rawReference?.trim() ?? '';

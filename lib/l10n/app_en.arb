@@ -3346,6 +3346,14 @@
       }
     }
   },
+  "artifactOpenSemantics": "{name}. Open artifact",
+  "@artifactOpenSemantics": {
+    "placeholders": {
+      "name": {
+        "type": "String"
+      }
+    }
+  },
   "artifactSourceOne": "Source: message {number}",
   "@artifactSourceOne": {
     "placeholders": {
