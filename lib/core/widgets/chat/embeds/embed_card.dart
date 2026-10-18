@@ -112,6 +112,8 @@ class _EmbedCardState extends State<EmbedCard> {
 
   /// Second, delayed height read (late layout), cancelled with the card.
   Timer? _measureTimer;
+  int _measureStep = 0;
+  int _stableReads = 0;
 
   /// Bumped whenever the card leaves its live state or starts a load, so a
   /// load that was already awaiting something can tell it is stale.
@@ -271,8 +273,15 @@ class _EmbedCardState extends State<EmbedCard> {
       final htmlSource = widget.htmlSource;
       final svg = _sanitizedSvg;
       if (htmlSource != null) {
-        // Same locked WebView as the viewer: inline styles and scripts run,
-        // nothing can be fetched, no JS channel and no way out of the document.
+        // The page runs its own inline scripts, exactly like the viewer does —
+        // it still gets no JavaScript channel, no file access, no window.open
+        // and no way out of the document. Without this the artifact's own JS
+        // never ran and the height could not be read at all.
+        await controller.setJavaScriptMode(JavaScriptMode.unrestricted);
+        if (!_stillWanted(generation)) {
+          unawaited(controller.setJavaScriptMode(JavaScriptMode.disabled));
+          return;
+        }
         final html = await htmlSource();
         if (!_stillWanted(generation)) return;
         await controller.loadHtmlString(
@@ -282,8 +291,8 @@ class _EmbedCardState extends State<EmbedCard> {
             themeCss: themeCss,
           ),
         );
-        // The frame follows the page: see [_measureContent].
-        unawaited(_measureContent(generation, controller));
+        // The frame follows the page: see [_startMeasure].
+        _startMeasure(controller);
       } else if (svg != null) {
         await controller.loadHtmlString(buildGuardedSvgHtml(svg));
       } else {
@@ -345,8 +354,9 @@ class _EmbedCardState extends State<EmbedCard> {
     if (widget.htmlSource != null) {
       final measured = _contentHeight;
       if (measured != null) return measured.clamp(160.0, _artifactCap(screen));
-      // Until the document reports its own height, a phone-shaped guess.
-      return (width * 1.02).clamp(200.0, screen / 2);
+      // Until the document reports its own height, a generous guess: a page
+      // that never answers must still show as much of itself as possible.
+      return (width * 1.55).clamp(300.0, screen * 0.95);
     }
     if (d == null) {
       final aspect = _svgAspect(_sanitizedSvg ?? '');
@@ -366,41 +376,53 @@ class _EmbedCardState extends State<EmbedCard> {
     return measured > _artifactCap(MediaQuery.sizeOf(context).height);
   }
 
-  /// Asks the document how tall it is, twice: on load and shortly after so
-  /// late layout (fonts, images) counts. The chat's own list owns the vertical
-  /// drag, so a fixed-height preview showed only the top of the page with no
-  /// way to scroll it — sizing the frame to the content is what Desktop does.
-  Future<void> _measureContent(
-    int generation,
-    WebViewController controller,
-  ) async {
-    Future<void> once() async {
-      final double? height;
-      try {
-        final raw = await controller.runJavaScriptReturningResult(
-          'Math.max(document.body?document.body.scrollHeight:0,'
-          'document.documentElement?document.documentElement.scrollHeight:0)',
-        );
-        height = raw is num
-            ? raw.toDouble()
-            : double.tryParse('$raw'.replaceAll('"', ''));
-      } catch (_) {
-        return;
-      }
-      if (height == null || height <= 0) return;
-      if (!mounted || generation != _generation) return;
-      if (_contentHeight != null && (_contentHeight! - height).abs() < 24) {
-        return;
-      }
-      setState(() => _contentHeight = height);
-    }
+  /// Asks the document how tall it is, repeatedly and cheaply: the first read
+  /// can land before layout settles, and late fonts/images change the answer.
+  /// The last two reads agreeing ends the polling.
+  ///
+  /// The chat's own list owns the vertical drag, so a fixed-height preview
+  /// showed only the top of the page with no way to scroll it — sizing the
+  /// frame to the content is what Desktop does.
+  void _startMeasure(WebViewController controller) {
+    _measureStep = 0;
+    _stableReads = 0;
+    _scheduleMeasure(controller);
+  }
 
-    await once();
+  static const List<int> _measureDelaysMs = [120, 400, 900, 1800, 3000];
+
+  void _scheduleMeasure(WebViewController controller) {
+    if (_measureStep >= _measureDelaysMs.length) return;
+    final delay = _measureDelaysMs[_measureStep++];
     _measureTimer?.cancel();
-    _measureTimer = Timer(const Duration(milliseconds: 400), () {
-      if (!mounted || generation != _generation) return;
-      unawaited(once());
+    _measureTimer = Timer(Duration(milliseconds: delay), () async {
+      if (!mounted || !identical(_controller, controller)) return;
+      final height = await _readDocumentHeight(controller);
+      if (!mounted || !identical(_controller, controller)) return;
+      if (height != null && height > 0) {
+        if (_contentHeight == null || height > _contentHeight! + 24) {
+          _stableReads = 0;
+          setState(() => _contentHeight = height);
+        } else if (++_stableReads >= 2) {
+          return;
+        }
+      }
+      _scheduleMeasure(controller);
     });
+  }
+
+  Future<double?> _readDocumentHeight(WebViewController controller) async {
+    try {
+      final raw = await controller.runJavaScriptReturningResult(
+        'Math.max(document.body?document.body.scrollHeight:0,'
+        'document.documentElement?document.documentElement.scrollHeight:0)',
+      );
+      return raw is num
+          ? raw.toDouble()
+          : double.tryParse('$raw'.replaceAll('"', ''));
+    } catch (_) {
+      return null;
+    }
   }
 
   @override
@@ -499,9 +521,11 @@ class _EmbedCardState extends State<EmbedCard> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 SizedBox(width: width, height: height, child: frame),
-                if (_artifactCapped && widget.onOpenFull != null)
-                  // The page is taller than the frame may grow; the rest is one
-                  // tap away instead of hidden.
+                if (widget.onOpenFull != null &&
+                    (_contentHeight == null || _artifactCapped))
+                  // Either the page is taller than the frame may grow, or it
+                  // never told us its height: the viewer is one tap away
+                  // instead of the rest of the page being hidden.
                   Padding(
                     padding: const EdgeInsets.only(top: 6),
                     child: Row(

@@ -19,11 +19,7 @@ const _page =
     '<!doctype html><html><head><style>body{margin:0}</style></head>'
     '<body><h1 id="marca">Artefato de teste</h1></body></html>';
 
-Widget _app(
-  Widget child, {
-  Size size = const Size(400, 800),
-  bool scrollable = false,
-}) => MaterialApp(
+Widget _app(Widget child, {Size size = const Size(400, 800)}) => MaterialApp(
   theme: AppTheme.fromId('dark'),
   locale: const Locale('en'),
   localizationsDelegates: Strings.localizationsDelegates,
@@ -31,14 +27,14 @@ Widget _app(
   home: MediaQuery(
     data: MediaQueryData(size: size),
     child: Scaffold(
-      // The chat's message list is a scrollable: a content-sized artifact is
-      // unbounded vertically there, so the harness has to be too.
-      body: scrollable
-          ? SingleChildScrollView(child: SizedBox(width: 400, child: child))
-          : Align(
-              alignment: Alignment.topLeft,
-              child: SizedBox(width: 400, height: size.height, child: child),
-            ),
+      // The chat's message list is a scrollable, so a content-sized artifact
+      // is unbounded vertically there; the harness matches that.
+      body: SingleChildScrollView(
+        child: Align(
+          alignment: Alignment.topLeft,
+          child: SizedBox(width: 400, child: child),
+        ),
+      ),
     ),
   ),
 );
@@ -152,6 +148,8 @@ void main() {
 
     await tester.pumpWidget(_app(preview(() async => _page)));
     await tester.pumpAndSettle();
+    // The height is read behind a short delay (layout settles first).
+    await tester.pump(const Duration(milliseconds: 250));
 
     expect(platform.last.runScripts, isNotEmpty);
     expect(
@@ -163,6 +161,45 @@ void main() {
     expect(tester.takeException(), isNull);
   });
 
+  testWidgets('runs the artifact\'s own scripts', (tester) async {
+    // Without this the resolve failed: the shared viewer configuration leaves
+    // JavaScript disabled, so the page's own scripts never ran and it could
+    // not report its height either.
+    await tester.pumpWidget(_app(preview(() async => _page)));
+    await tester.pumpAndSettle();
+
+    expect(platform.last.javaScriptMode, JavaScriptMode.unrestricted);
+    // Still no bridge to the app.
+    expect(platform.last.javaScriptChannels, isEmpty);
+  });
+
+  testWidgets('a page that never reports its height offers the viewer', (
+    tester,
+  ) async {
+    platform.javaScriptResult = 0;
+    var opened = 0;
+
+    await tester.pumpWidget(
+      _app(
+        EmbedCard(
+          htmlSource: () async => _page,
+          htmlTitle: 'render-check-v4.html',
+          onOpenFull: () => opened++,
+          fallback: _fallback,
+          consent: consent,
+        ),
+      ),
+    );
+    await tester.pumpAndSettle();
+
+    // The frame keeps a generous guess, and the escape hatch is on screen.
+    expect(find.byKey(const ValueKey('embed-artifact-open')), findsOneWidget);
+    tester
+        .widget<TextButton>(find.byKey(const ValueKey('embed-artifact-open')))
+        .onPressed!();
+    expect(opened, 1);
+    expect(tester.takeException(), isNull);
+  });
   testWidgets('a page taller than the frame offers the viewer', (tester) async {
     platform.javaScriptResult = 9000;
     var opened = 0;
@@ -176,7 +213,6 @@ void main() {
           fallback: _fallback,
           consent: consent,
         ),
-        scrollable: true,
       ),
     );
     await tester.pumpAndSettle();
