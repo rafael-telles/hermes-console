@@ -2051,6 +2051,7 @@ class _HomeDashboardScreenState extends State<HomeDashboardScreen>
       bots: homeBoardBots(
         profiles: profiles,
         sessions: snapshot?.sessions ?? const [],
+        strings: strings,
         activeSessions: _activeRoster,
         observedAt: _activeRosterAt,
         turnStartedAtOf: (id, profile) =>
